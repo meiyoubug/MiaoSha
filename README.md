@@ -139,3 +139,55 @@ mybatis-plus:
   mapper-locations: classpath:/xml/*.xml
 ```
 
+### 代码生成器模板
+
+```java
+AutoGenerator autoGenerator = new AutoGenerator();
+
+        DataSourceConfig dataSourceConfig = new DataSourceConfig();
+        dataSourceConfig.setDbType(DbType.MYSQL);
+        dataSourceConfig.setDriverName("com.mysql.cj.jdbc.Driver");
+        dataSourceConfig.setUsername("root");
+        dataSourceConfig.setPassword("123456");
+        dataSourceConfig.setUrl("jdbc:mysql://localhost:3306/seckill?useUnicode=true&characterEncoding=UTF-8");
+        autoGenerator.setDataSource(dataSourceConfig);
+        GlobalConfig globalConfig = new GlobalConfig();
+        //生成文件是否在磁盘中打开
+        globalConfig.setOpen(false);
+        //生成代码的路径
+        globalConfig.setOutputDir(System.getProperty("user.dir")+"/src/main/java");
+        globalConfig.setAuthor("admin");
+        //service命名规则 %s是表名 表名+Service
+        globalConfig.setServiceName("%sService");
+        autoGenerator.setGlobalConfig(globalConfig);
+        //设置包信息
+        PackageConfig packageConfig = new PackageConfig();
+        packageConfig.setParent("com.zc");
+        packageConfig.setEntity("entity");
+        packageConfig.setMapper("mapper");
+        packageConfig.setController("controller");
+        packageConfig.setService("service");
+        packageConfig.setServiceImpl("service.impl");
+        autoGenerator.setPackageInfo(packageConfig);
+        StrategyConfig strategyConfig = new StrategyConfig();
+        //是否为实体类添加lombok注解
+        strategyConfig.setEntityLombokModel(true);
+        //数据库表名下划线转驼峰
+        strategyConfig.setNaming(NamingStrategy.underline_to_camel);
+        //字段名下划线转驼峰
+        strategyConfig.setColumnNaming(NamingStrategy.underline_to_camel);
+
+        //设置自动生成的表名
+        strategyConfig.setInclude("t_user");
+        //设置自动填充创建时间和更新时间
+        List<TableFill> list = new ArrayList<>();
+        TableFill tableFill1 = new TableFill("create_time", FieldFill.INSERT);
+        TableFill tableFill2 = new TableFill("update_time",FieldFill.INSERT_UPDATE);
+        list.add(tableFill1);
+        list.add(tableFill2);
+        //执行代码
+        strategyConfig.setTableFillList(list);
+        autoGenerator.setStrategy(strategyConfig);
+        autoGenerator.execute();
+```
+
