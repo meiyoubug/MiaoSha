@@ -127,9 +127,6 @@ spring:
     username: guest #默认用户名
     password: guest #默认密码
 mybatis-plus:
-  configuration:
-    # 日志
-    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
   global-config:
     db-config:
       logic-delete-field: delFlag
@@ -418,4 +415,110 @@ int updateByOptimistic(Stock stock);
 接下来我们使用Jmeter对**localhost:8081/order/createOptimisticOrder/1**进行压测，结果是没有超卖，但是严重少卖了，原因就是我们在更新的时候使用了类似于java的**CAS**操作。
 
 ## 3、令牌桶限流 + 再谈超卖
+
+#### 令牌桶限流
+
+> 令牌桶限流
+
+![图片](https://zcandyyj.oss-cn-hangzhou.aliyuncs.com/typora/images/640.png)
+
+> 令牌桶与漏桶算法
+
+漏桶算法思路很简单，水（请求）先进入到漏桶里，漏桶以一定的速度出水，当水流入速度过大会直接溢出，可以看出漏桶算法能强行限制数据的传输速率。
+
+![图片](https://zcandyyj.oss-cn-hangzhou.aliyuncs.com/typora/images/640-20230715130813316.png)
+
+令牌桶算法不能与另外一种常见算法漏桶算法相混淆。这两种算法的主要区别在于：
+
+漏桶算法能够强行限制数据的传输速率，而令牌桶算法在能够限制数据的平均传输速率外，**还允许某种程度的突发传输**。在令牌桶算法中，只要令牌桶中存在令牌，那么就允许突发地传输数据直到达到用户配置的门限，**因此它适合于具有突发特性的流量**。
+
+`提示：`漏桶算法的出水速度是固定的，所以说能够强行限制数据的传输速率，而令牌桶算法只要是桶内有令牌那么就可以在固定传输速率的基础上继续突发的传输数据直到达到用户配置的门限。
+
+> #### 使用Guava的RateLimiter实现令牌桶限流接口
+
+Guava是Google开源的Java工具类，里面包罗万象，也提供了限流工具类RateLimiter，该类里面实现了令牌桶算法。
+
+我们拿出源码，在之前讲过的乐观锁抢购接口上增加该令牌桶限流代码：
+
+- OrderController
+
+```java
+ /**
+     * 乐观锁更新库存+令牌桶限流
+     *
+     * @param sid sid
+     * @return {@link String}
+     */
+    @RequestMapping("/createOptimisticOrder/{sid}")
+    @ResponseBody
+    public String createOptimisticOrder(@PathVariable int sid) {
+        //阻塞式获取令牌
+        //LOGGER.info("等待时间" + rateLimiter.acquire());
+        
+        //非阻塞式获取令牌
+        if (!rateLimiter.tryAcquire(1000, TimeUnit.MILLISECONDS)) {
+            LOGGER.warn("你被限流了，真不幸，直接返回失败");
+            return "购买失败，库存不足";
+        }
+
+
+        int id = 0;
+        try {
+            id = stockService.createOptimisticOrder(sid);
+            LOGGER.info("购买成功，剩余库存为：[{}]", id);
+        } catch (Exception e) {
+            LOGGER.error("购买失败，库存不足");
+        }
+        return "购买成功，剩余库存为" + id;
+    }
+```
+
+代码中，`RateLimiter rateLimiter = RateLimiter.create(10);`这里初始化了令牌桶类，每秒放行10个请求。
+
+在接口中，可以看到有两种使用方法：
+
+- 阻塞式获取令牌：请求进来后，若令牌桶里没有足够的令牌，就在这里阻塞住，等待令牌的发放。
+- 非阻塞式获取令牌：请求进来后，若令牌桶里没有足够的令牌，会尝试等待设置好的时间（这里写了1000ms），其会自动判断在1000ms后，这个请求能不能拿到令牌，如果不能拿到，直接返回抢购失败。如果timeout设置为0，则等于阻塞时获取令牌。
+
+我们使用JMeter设置200个线程，来同时抢购数据库里库存100个的iphone。
+
+我们将请求响应结果为“你被限流了，真不幸，直接返回失败”的请求单独断言出来：
+
+![图片](https://zcandyyj.oss-cn-hangzhou.aliyuncs.com/typora/images/640.jpeg)
+
+我们使用`rateLimiter.tryAcquire(1000, TimeUnit.MILLISECONDS)`，非阻塞式的令牌桶算法，来看看购买结果：
+
+![图片](https://zcandyyj.oss-cn-hangzhou.aliyuncs.com/typora/images/640-20230715132634825.jpeg)
+
+可以看到，**绿色的请求代表被令牌桶拦截掉的请求**，红色的则是购买成功下单的请求。通过JMeter的请求汇总报告，可以得知，在这种情况下请求能够没被限流的比率在42.67%。
+
+![image-20230715133043152](https://zcandyyj.oss-cn-hangzhou.aliyuncs.com/typora/images/image-20230715133043152.png)
+
+可以看到，200个请求中没有被限流的请求里，由于乐观锁的原因，会出现一些并发更新数据库失败的问题，导致商品没有被卖出。
+
+我们再试一试令牌桶算法的阻塞式使用，我们将代码换成`rateLimiter.acquire();`，然后将数据库恢复成100个库存，订单表清零。
+
+响应断言设置为没被限流的返回结果，此时controller的返回结果改成**return "购买成功";**
+
+![image-20230715134127313](https://zcandyyj.oss-cn-hangzhou.aliyuncs.com/typora/images/image-20230715134127313.png)
+
+看一下汇总报告：
+
+![image-20230715135056861](https://zcandyyj.oss-cn-hangzhou.aliyuncs.com/typora/images/image-20230715135056861.png)
+
+所有的请求都没被拦截
+
+`总结：`
+
+- 首先，所有请求进入了处理流程，但是被限流成每秒处理10个请求。
+- 在刚开始的请求里，令牌桶里一下子被取了10个令牌，所以出现了第二张图中的，乐观锁并发更新失败，然而在后面的请求中，由于令牌一旦生成就被拿走，所以请求进来的很均匀，没有再出现并发更新库存的情况。**这也符合“令牌桶”的定义，可以应对突发请求（只是由于乐观锁，所以购买冲突了）。而非“漏桶”的永远恒定的请求限制。**
+- 200个请求，**在乐观锁的情况下**，卖出了全部100个商品，如果没有该限流，而请求又过于集中的话，会卖不出去几个。就像第一篇文章中的那种情况一样。
+
+![image-20230715135129234](https://zcandyyj.oss-cn-hangzhou.aliyuncs.com/typora/images/image-20230715135129234.png)
+
+![image-20230715135146251](https://zcandyyj.oss-cn-hangzhou.aliyuncs.com/typora/images/image-20230715135146251.png)
+
+#### 再谈防止超卖
+
+
 

@@ -65,7 +65,6 @@ public class StockServiceImpl extends ServiceImpl<StockMapper, Stock> implements
         return stock;
     }
 
-
     private void saleStock(int sid){
         stockMapper.updateSaleCnt(sid);
     }
