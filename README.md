@@ -191,3 +191,143 @@ AutoGenerator autoGenerator = new AutoGenerator();
         autoGenerator.execute();
 ```
 
+## 1、使用悲观锁解决超卖问题
+
+此时代码生成器已经生成文件夹和简单代码了，接下来将mapper.xml文件放在resource下面
+
+![image-20230715104129094](https://zcandyyj.oss-cn-hangzhou.aliyuncs.com/typora/images/image-20230715104129094.png)
+
+> 启动类
+
+```java
+@SpringBootApplication
+@MapperScan("com.zc.mapper")
+public class StartApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(StartApplication.class,args);
+    }
+}
+```
+
+> service
+
+- StockService
+
+```java
+public interface StockService extends IService<Stock> {
+     int createWrongOrder(int sid);
+     int createOptimisticOrder(int sid);
+}
+```
+
+> impl
+
+- StockServiceImpl
+
+```java
+private static final Logger LOGGER = LoggerFactory.getLogger(StockServiceImpl.class);
+    @Resource
+    private StockMapper stockMapper;
+    @Resource
+    private StockOrderMapper stockOrderMapper;
+    @Override
+    public int createWrongOrder(int sid) {
+        Stock stock=checkStock(sid);
+        saleStock(sid);
+        checkStock(sid);
+        int id=createOrder(stock);
+        return id;
+    }
+
+    private Stock checkStock(int sid){
+        Stock stock=stockMapper.selectById(sid);
+        if(stock.getSale().equals(stock.getCount()+1)){
+            throw new RuntimeException("库存不足");
+        }
+        return stock;
+    }
+
+
+    private void saleStock(int sid){
+        stockMapper.updateSaleCnt(sid);
+    }
+
+    private int createOrder(Stock stock){
+        StockOrder stockOrder=new StockOrder();
+        stockOrder.setSid(stock.getId());
+        stockOrder.setName(stock.getName());
+        int id= stockOrderMapper.insert(stockOrder);
+        return id;
+    }
+```
+
+> OrderController
+
+```java
+@RestController
+@RequestMapping("/order")
+public class OrderController {
+    private static final Logger LOGGER = LoggerFactory.getLogger(OrderController.class);
+
+    @Resource
+    private StockService stockService;
+
+    @RequestMapping("/createWrongOrder/{sid}")
+    @ResponseBody
+    public String createWrongOrder(@PathVariable int sid){
+        LOGGER.info("购买物品编号sid=[{}]",sid);
+        int id=0;
+        try {
+            id=stockService.createWrongOrder(sid);
+            LOGGER.info("创建订单id：[{}]",id);
+        }catch (Exception e){
+            LOGGER.error("Exception",e);
+        }
+        return String.valueOf(id);
+    }
+}
+```
+
+> StockMapper
+
+```java
+ void updateSaleCnt(@Param("sid") int sid);
+```
+
+> StockMapper.xml
+
+```xml
+ <update id="updateSaleCnt">
+       update stock set sale=sale+1 where id=#{sid}
+ </update>
+```
+
+启动启动类
+
+使用Jmeter测试
+
+如何通过JMeter进行压力测试，请参考下文，讲的非常入门但详细，包教包会：
+
+https://www.cnblogs.com/stulzq/p/8971531.html
+
+> 运行结果
+
+此时你会发现你的订单表产生了超过100条的订单，接下来我们使用悲观锁来解决超卖问题，在createWrongOrder上添加**@Transactional(rollbackFor = {})**注解
+
+- impl
+
+```java
+    @Transactional(rollbackFor = {})
+    public int createWrongOrder(int sid) {
+        Stock stock=checkStock(sid);
+        saleStock(sid);
+        checkStock(sid);
+        int id=createOrder(stock);
+        return id;
+    }
+```
+
+此时我们再来测试一遍，发现卖了100份，也生成了100个订单，为什么加个注解就可以呢？我们来分析一下
+
+
+
