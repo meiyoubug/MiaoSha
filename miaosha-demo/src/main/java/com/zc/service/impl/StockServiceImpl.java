@@ -6,6 +6,8 @@ import com.zc.mapper.StockMapper;
 import com.zc.mapper.StockOrderMapper;
 import com.zc.service.StockService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import org.apache.ibatis.session.SqlSession;
+import org.apache.ibatis.session.SqlSessionFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -32,7 +34,7 @@ public class StockServiceImpl extends ServiceImpl<StockMapper, Stock> implements
     public int createWrongOrder(int sid) {
         Stock stock=checkStock(sid);
         saleStock(sid);
-        checkStock(sid);
+        checkStockAfterSale(sid);
         int id=createOrder(stock);
         return id;
     }
@@ -59,13 +61,24 @@ public class StockServiceImpl extends ServiceImpl<StockMapper, Stock> implements
 
     private Stock checkStock(int sid){
         Stock stock=stockMapper.selectById(sid);
-        if(stock.getSale().equals(stock.getCount()+1)){
+        LOGGER.info("刚进来时的库存为：{}",stock.getCount()-stock.getSale());
+        if(stock.getSale()>=(stock.getCount())){
+            throw new RuntimeException("库存不足");
+        }
+        return stock;
+    }
+
+    private Stock checkStockAfterSale(int sid){
+        Stock stock=stockMapper.selectById(sid);
+        LOGGER.info("销售之后的库存为：{}",stock.getCount()-stock.getSale());
+        if(stock.getSale()>=(stock.getCount()+1)){
             throw new RuntimeException("库存不足");
         }
         return stock;
     }
 
     private void saleStock(int sid){
+        LOGGER.info("扣减库存了");
         stockMapper.updateSaleCnt(sid);
     }
 

@@ -12,6 +12,6 @@
            version=version+1,
        </set>
        where id = #{id}
-       and version=#{version}
+       and sale=#{sale}
     </update>
 </mapper>
