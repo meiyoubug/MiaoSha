@@ -2,7 +2,7 @@
 
 ## 前言
 
-因为https://github.com/qqxx6661/miaosha项目只有最终结果，所以我打算去实现蛮三刀酱博客的每个阶段，并详细记录，以及结果剖析
+因为**https://github.com/qqxx6661/miaosha**项目只有最终结果，所以我打算去实现蛮三刀酱博客的每个阶段，并详细记录，以及结果剖析
 
 ## 项目准备
 
@@ -304,7 +304,7 @@ public class OrderController {
 
 启动启动类
 
-使用Jmeter测试
+使用Jmeter测试 **localhost:8081/order/createWrongOrder/1** 这个接口
 
 如何通过JMeter进行压力测试，请参考下文，讲的非常入门但详细，包教包会：
 
@@ -314,7 +314,7 @@ https://www.cnblogs.com/stulzq/p/8971531.html
 
 此时你会发现你的订单表产生了超过100条的订单，接下来我们使用悲观锁来解决超卖问题，在createWrongOrder上添加**@Transactional(rollbackFor = {})**注解
 
-- impl
+- StockServiceImpl
 
 ```java
     @Transactional(rollbackFor = {})
@@ -327,7 +327,95 @@ https://www.cnblogs.com/stulzq/p/8971531.html
     }
 ```
 
-此时我们再来测试一遍，发现卖了100份，也生成了100个订单，为什么加个注解就可以呢？我们来分析一下
+此时我们再来测试一遍localhost:8081/order/createWrongOrder/1这个接口，发现卖了100份，也生成了100个订单，为什么加个注解就可以呢？我们来分析一下
 
+**流程**
 
+1、查看有没有库存->2、更新库存->3、查看有没有库存->4、创建订单
+
+在不加注解的情况下，每一个阶段都是一个隐性事务，是针对数据库层面来说的，只要sql语句执行成功就不会回滚，还有我们在checkStock抛出的异常没有捕获，当流程3抛出异常的时候，流程4是不会执行的。
+
+当500个请求并发执行的时候，流程1只要看到有库存就不会抛出异常，因为select执行速度是比update快的，所以可能500个都不会抛出异常，虽然流程2是当前读，且最终的结果是正确的，但是问题出现在流程3，因为在我流程3执行select的时候，可能有其它多个线程执行了更新操作，导致流程3的查询结果是不准确的，所以产生了超卖问题。
+
+**那为什么加上注解就可以呢？**
+
+加上注解的话**1、查看有没有库存->2、更新库存->3、查看有没有库存->4、创建订单**流程1-4都在一个事务里，因为隔离级别是可重复读，所以流程3读的是流程2的最新值，且流程2会上行锁，行锁只有在当前事务commit的时候才会释放，当当前事务还没提交的时候，其它事务都会阻塞在流程2，所以加上注解就可以防止超卖，且最后的结果也是我们所期望的结果。
+
+## 2、使用乐观锁解决超卖问题
+
+第一节我们说到了加上事务注解，我们就会得到我们所期待的结果，但是在Service层给更新表添加一个事务，这样每个线程更新请求的时候都会先去锁表的这一行（悲观锁），更新完库存后再释放锁，可这样就太慢了。
+
+我们需要乐观锁。
+
+一个最简单的办法就是，给每个商品库存一个版本号version字段
+
+> StockService
+
+```java
+int createOptimisticOrder(int sid);
+```
+
+> StockServiceImpl
+
+```java
+ @Override
+    public int createOptimisticOrder(int sid) {
+        //校验库存
+        Stock stock=checkStock(sid);
+        //乐观锁更新库存
+        saleStockOptimistic(stock);
+        //创建订单
+        int id=createOrder(stock);
+        return stock.getCount()-(stock.getSale()+1);
+    }
+
+    private void saleStockOptimistic(Stock stock){
+        LOGGER.info("查询数据库尝试更新库存");
+        int count=stockMapper.updateByOptimistic(stock);
+        if(count==0){
+            throw new RuntimeException("并发更新库存失败，version不匹配");
+        }
+    }
+```
+
+> OrderController
+
+```java
+@RequestMapping("/createOptimisticOrder/{sid}")
+    @ResponseBody
+    public String createOptimisticOrder(@PathVariable int sid){
+        int id=0;
+        try{
+            id=stockService.createOptimisticOrder(sid);
+            LOGGER.info("购买成功，剩余库存为：[{}]",id);
+        }catch (Exception e){
+            LOGGER.error("购买失败，库存不足");
+        }
+        return "购买成功，剩余库存为"+id;
+    }
+```
+
+> StockMapper
+
+```java
+int updateByOptimistic(Stock stock);
+```
+
+> StockMapper.xml
+
+```xml
+<update id="updateByOptimistic" parameterType="com.zc.entity.Stock">
+       update stock
+       <set>
+           sale=sale+1,
+           version=version+1,
+       </set>
+       where id = #{id}
+       and version=#{version}
+    </update>
+```
+
+接下来我们使用Jmeter对**localhost:8081/order/createOptimisticOrder/1**进行压测，结果是没有超卖，但是严重少卖了，原因就是我们在更新的时候使用了类似于java的**CAS**操作。
+
+## 3、令牌桶限流 + 再谈超卖
 

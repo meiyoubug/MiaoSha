@@ -29,7 +29,6 @@ public class StockServiceImpl extends ServiceImpl<StockMapper, Stock> implements
     @Resource
     private StockOrderMapper stockOrderMapper;
     @Override
-    @Transactional(rollbackFor = {})
     public int createWrongOrder(int sid) {
         Stock stock=checkStock(sid);
         saleStock(sid);
