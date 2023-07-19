@@ -8,7 +8,7 @@ spring:
   datasource:
     url: jdbc:mysql://localhost:3306/m4a_miaosha?characterEncoding=utf-8&rewriteBatchedStatements=true&&allowMultiQueries=true
     username: root
-    password: 86739043
+    password: password
     driver-class-name: com.mysql.cj.jdbc.Driver
   servlet:
     multipart:
