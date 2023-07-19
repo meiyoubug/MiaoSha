@@ -89,5 +89,27 @@ public class OrderController {
         return "购买成功，剩余库存为：" + stockLeft;
     }
 
+    @GetMapping("/createOrderWithVerifiedUrlAndLimit/{sid}/{userId}/{verifyHash}")
+    @ResponseBody
+    public String createOrderWithVerifiedUrlAndLimit(@PathVariable("sid") Integer sid,
+                                                     @PathVariable("userId") Integer userId,
+                                                     @PathVariable("verifyHash") String verifyHash) {
+        int stockLeft;
+        try {
+            int count = stockService.addUserCount(userId);
+            LOGGER.info("用户截至该次的访问次数为: [{}]", count);
+            boolean isBanned = stockService.getUserIsBanned(userId);
+            if (isBanned) {
+                return "购买失败，超过频率限制";
+            }
+            stockLeft = stockService.createVerifiedOrder(sid, userId, verifyHash);
+            LOGGER.info("购买成功，剩余库存为：[{}]", stockLeft);
+        } catch (Exception e) {
+            LOGGER.error("购买失败：[{}]", e.getMessage());
+            return e.getMessage();
+        }
+        return "购买成功，剩余库存为：" + stockLeft;
+    }
+
 
 }

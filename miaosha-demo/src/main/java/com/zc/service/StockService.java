@@ -12,6 +12,10 @@ import com.baomidou.mybatisplus.extension.service.IService;
  * @since 2023-07-14
  */
 public interface StockService extends IService<Stock> {
+     int addUserCount(Integer userId) throws Exception;
+
+     boolean getUserIsBanned(Integer userId);
+
      int createWrongOrder(int sid);
 
      int createOptimisticOrder(int sid);

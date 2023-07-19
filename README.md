@@ -745,3 +745,93 @@ public class UserController {
 其实很简单的就能想到用redis给每个用户做访问统计，甚至是带上商品id，对单个商品做访问统计，这都是可行的。
 
 我们先实现一个对用户的访问频率限制，我们在用户申请下单时，检查用户的访问次数，超过访问次数，则不让他下单！
+
+使用Redis/Memcached
+
+我们使用外部缓存来解决问题，这样即便是分布式的秒杀系统，请求被随意分流的情况下，也能做到精准的控制每个用户的访问次数。
+
+- StockService
+
+```java
+     int addUserCount(Integer userId) throws Exception;
+
+     boolean getUserIsBanned(Integer userId);
+```
+
+
+
+- Impl
+
+```java
+    private static final Integer ALLOW_COUNT = 10;
+
+    @Override
+    public int addUserCount(Integer userId) throws Exception {
+        String limitKey = CacheKey.LIMIT_KEY.getKey() + "_" + userId;
+        String limitNum = stringRedisTemplate.opsForValue().get(limitKey);
+        int limit = -1;
+        if (limitNum == null) {
+            stringRedisTemplate.opsForValue().set(limitKey, "0", 3600, TimeUnit.SECONDS);
+        } else {
+            limit = Integer.parseInt(limitNum) + 1;
+            stringRedisTemplate.opsForValue().set(limitKey, String.valueOf(limit), 3600, TimeUnit.SECONDS);
+        }
+        return limit == -1 ? 0 : limit;
+    }
+
+    @Override
+    public boolean getUserIsBanned(Integer userId) {
+        String limitKey = CacheKey.LIMIT_KEY.getKey() + "_" + userId;
+        String limitNum = stringRedisTemplate.opsForValue().get(limitKey);
+        if (limitNum == null) {
+            LOGGER.error("该用户没有访问申请验证值记录，疑似异常");
+            return true;
+        }
+        return Integer.parseInt(limitNum) > ALLOW_COUNT;
+    }
+```
+
+
+
+- OrderController
+
+```java
+    @GetMapping("/createOrderWithVerifiedUrlAndLimit/{sid}/{userId}/{verifyHash}")
+    @ResponseBody
+    public String createOrderWithVerifiedUrlAndLimit(@PathVariable("sid") Integer sid,
+                                                     @PathVariable("userId") Integer userId,
+                                                     @PathVariable("verifyHash") String verifyHash) {
+        int stockLeft;
+        try {
+            int count = stockService.addUserCount(userId);
+            LOGGER.info("用户截至该次的访问次数为: [{}]", count);
+            boolean isBanned = stockService.getUserIsBanned(userId);
+            if (isBanned) {
+                return "购买失败，超过频率限制";
+            }
+            stockLeft = stockService.createVerifiedOrder(sid, userId, verifyHash);
+            LOGGER.info("购买成功，剩余库存为：[{}]", stockLeft);
+        } catch (Exception e) {
+            LOGGER.error("购买失败：[{}]", e.getMessage());
+            return e.getMessage();
+        }
+        return "购买成功，剩余库存为：" + stockLeft;
+    }
+```
+
+使用jmeter自行测试
+
+## 5、缓存与数据库双写问题
+
+
+
+
+
+
+
+## 6、如何优雅的实现订单异步处理
+
+
+
+
+
