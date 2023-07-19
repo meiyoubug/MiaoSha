@@ -559,3 +559,189 @@ Guava是Google开源的Java工具类，里面包罗万象，也提供了限流�
     </update>
 ```
 
+
+
+## 4、抢购接口隐藏+单用户限制频率
+
+**抢购接口隐藏（接口加盐）的具体做法**：
+
+- 每次点击秒杀按钮，先从服务器获取一个秒杀验证值（接口内判断是否到秒杀时间）。
+- Redis以缓存用户ID和商品ID为Key，秒杀地址为Value缓存验证值
+- 用户请求秒杀商品的时候，要带上秒杀验证值进行校验。
+
+
+
+**代码实现**
+
+- 获取验证值接口
+
+该接口要求传用户id和商品id，返回验证值，并且该验证值
+
+- UserService
+
+```java
+public interface UserService extends IService<User> {
+     String getVerifyHash(Integer sid,Integer userId) throws Exception;
+}
+```
+
+
+
+- UserServiceImpl
+
+```java
+@Service
+public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements UserService {
+    private static  final Logger LOGGER=  LoggerFactory.getLogger(UserServiceImpl.class);
+    @Resource
+    private UserMapper userMapper;
+    @Resource
+    private StockMapper stockMapper;
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
+    private static final String SALT=CacheKey.HASH_KEY.getKey();
+
+    
+    @Override
+    public String getVerifyHash(Integer sid, Integer userId) throws Exception {
+
+        //检查用户合法性
+        User user=userMapper.selectById(userId);
+        if(user==null){
+            throw new Exception("用户不存在");
+        }
+        LOGGER.info("用户信息：[{}]",user.toString());
+
+        //检查商品合法性
+        Stock stock=stockMapper.selectById(sid);
+        if(stock==null){
+            throw new Exception("商品不存在");
+        }
+        LOGGER.info("用户信息：[{}]",stock.toString());
+
+        //生成hash
+        String verify=SALT+sid+userId;
+        String verifyHash= DigestUtils.md5DigestAsHex(verify.getBytes());
+
+        //将hash和用户商品信息存入redis
+        String hashKey= CacheKey.HASH_KEY.getKey()+"_"+sid+"_"+userId;
+        stringRedisTemplate.opsForValue().set(hashKey,verifyHash,3600, TimeUnit.SECONDS);
+        LOGGER.info("Redis写入：[{}] [{}]",hashKey,verifyHash);
+        return verifyHash;
+    }
+}
+```
+
+
+
+- UserController
+
+```java
+@RestController
+@RequestMapping("/user")
+public class UserController {
+
+    @Resource
+    private UserService userService;
+    private static final Logger LOGGER= LoggerFactory.getLogger(UserController.class);
+    @GetMapping("/getVerifyHash/{sid}/{userId}")
+    @ResponseBody
+    public String getVerifyHash(@PathVariable("sid") Integer sid,
+                                @PathVariable("userId") Integer userId){
+        String hash;
+        try{
+            hash= userService.getVerifyHash(sid,userId);
+        }catch (Exception e){
+            LOGGER.error("获取验证hash失败，原因：[{}]",e.getMessage());
+            return  "获取验证hash失败";
+        }
+        return String.format("请求抢购验证hash值为：%s",hash);
+    }
+}
+```
+
+代码解释：
+
+可以看到在Service中，我们拿到用户id和商品id后，会检查商品和用户信息是否在表中存在，并且会验证现在的时间（我这里为了简化，只是写了一行LOGGER，大家可以根据需求自行实现）。在这样的条件过滤下，才会给出hash值。**并且将Hash值写入了Redis中，缓存3600秒（1小时），如果用户拿到这个hash值一小时内没下单，则需要重新获取hash值。**
+
+下面又到了动小脑筋的时间了，想一下，这个hash值，如果每次都按照商品+用户的信息来md5，是不是不太安全呢。毕竟用户id并不一定是用户不知道的（就比如我这种用自增id存储的，肯定不安全），而商品id，万一也泄露了出去，那么坏蛋们如果再知到我们是简单的md5，那直接就把hash算出来了！
+
+在代码里，我给hash值加了个前缀，也就是一个salt（盐），相当于给这个固定的字符串撒了一把盐，这个盐是`HASH_KEY("miaosha_hash")`，写死在了代码里。这样黑产只要不猜到这个盐，就没办法算出来hash值。
+
+**这也只是一种例子，实际中，你可以把盐放在其他地方， 并且不断变化，或者结合时间戳，这样就算自己的程序员也没法知道hash值的原本字符串是什么了。**
+
+#### 携带验证值下单接口
+
+用户在前台拿到了验证值后，点击下单按钮，前端携带着特征值，即可进行下单操作。
+
+- StockService
+
+```java
+ int createVerifiedOrder(Integer sid,Integer userId,String verifyHash) throws Exception;
+```
+
+
+
+- StockServiceImpl
+
+```java
+@Override
+    public int createVerifiedOrder(Integer sid, Integer userId, String verifyHash) throws Exception {
+        //判断是否在秒杀时间内
+        LOGGER.info("请自行验证是否在秒杀时间内");
+
+        //验证hash值合法性
+        String hashKey= CacheKey.HASH_KEY.getKey()+"_"+sid+"_"+userId;
+        String verifyHashInRedis=stringRedisTemplate.opsForValue().get(hashKey);
+        if(!verifyHash.equals(verifyHashInRedis)){
+            throw new Exception("hash与Redis中不符合");
+        }
+        LOGGER.info("验证hash值合法性成功");
+
+        Stock stock=stockMapper.selectById(sid);
+        //乐观锁更新库存
+        saleStockOptimistic(stock);
+        LOGGER.info("乐观锁更新库存成功");
+
+        //创建订单
+        StockOrder stockOrder=new StockOrder();
+        stockOrder.setSid(sid);
+        stockOrder.setName(stock.getName());
+        stockOrder.setUserId(userId);
+        stockOrderMapper.insert(stockOrder);
+        LOGGER.info("创建订单成果");
+        return stock.getCount()-(stock.getSale()+1);
+    }
+```
+
+
+
+- OrderController
+
+```java
+    @GetMapping("/createOrderWithVerifiedUrl/{sid}/{userId}/{verifyHash}")
+    @ResponseBody
+    public String createOrderWithVerifiedUrl(@PathVariable("sid") Integer sid,
+                                             @PathVariable("userId") Integer userId,
+                                             @PathVariable("verifyHash") String verifyHash) {
+        int stockLeft;
+        try {
+            stockLeft = stockService.createVerifiedOrder(sid, userId, verifyHash);
+            LOGGER.info("购买成功，剩余库存为：[{}]", stockLeft);
+        } catch (Exception e) {
+            LOGGER.error("购买失败：[{}]", e.getMessage());
+            return e.getMessage();
+        }
+        return "购买成功，剩余库存为：" + stockLeft;
+    }
+```
+
+**单用户限制频率**
+
+假设我们做好了接口隐藏，但是像我上面说的，总有无聊的人会写一个复杂的脚本，先请求hash值，再立刻请求购买，如果你的app下单按钮做的很差，大家都要开抢后0.5秒才能请求成功，那可能会让脚本依然能够在大家前面抢购成功。
+
+我们需要在做一个额外的措施，来限制单个用户的抢购频率。
+
+其实很简单的就能想到用redis给每个用户做访问统计，甚至是带上商品id，对单个商品做访问统计，这都是可行的。
+
+我们先实现一个对用户的访问频率限制，我们在用户申请下单时，检查用户的访问次数，超过访问次数，则不让他下单！

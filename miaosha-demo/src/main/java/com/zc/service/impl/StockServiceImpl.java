@@ -6,10 +6,12 @@ import com.zc.mapper.StockMapper;
 import com.zc.mapper.StockOrderMapper;
 import com.zc.service.StockService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.zc.utils.CacheKey;
 import org.apache.ibatis.session.SqlSession;
 import org.apache.ibatis.session.SqlSessionFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -30,11 +32,14 @@ public class StockServiceImpl extends ServiceImpl<StockMapper, Stock> implements
     private StockMapper stockMapper;
     @Resource
     private StockOrderMapper stockOrderMapper;
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
+
+    private static final String SALT = CacheKey.HASH_KEY.getKey();
     @Override
     public int createWrongOrder(int sid) {
         Stock stock=checkStock(sid);
         saleStock(sid);
-        checkStockAfterSale(sid);
         int id=createOrder(stock);
         return id;
     }
@@ -50,6 +55,38 @@ public class StockServiceImpl extends ServiceImpl<StockMapper, Stock> implements
         return stock.getCount()-(stock.getSale()+1);
     }
 
+    @Override
+    public int createVerifiedOrder(Integer sid, Integer userId, String verifyHash) throws Exception {
+        //判断是否在秒杀时间内
+        LOGGER.info("请自行验证是否在秒杀时间内");
+
+        //验证hash值合法性
+        String hashKey= CacheKey.HASH_KEY.getKey()+"_"+sid+"_"+userId;
+        String verifyHashInRedis=stringRedisTemplate.opsForValue().get(hashKey);
+        if(!verifyHash.equals(verifyHashInRedis)){
+            throw new Exception("hash与Redis中不符合");
+        }
+        LOGGER.info("验证hash值合法性成功");
+
+        Stock stock=stockMapper.selectById(sid);
+        //乐观锁更新库存
+        saleStockOptimistic(stock);
+        LOGGER.info("乐观锁更新库存成功");
+
+        //创建订单
+        StockOrder stockOrder=new StockOrder();
+        stockOrder.setSid(sid);
+        stockOrder.setName(stock.getName());
+        stockOrder.setUserId(userId);
+        stockOrderMapper.insert(stockOrder);
+        LOGGER.info("创建订单成果");
+
+        return stock.getCount()-(stock.getSale()+1);
+
+
+    }
+
+
     private void saleStockOptimistic(Stock stock){
         LOGGER.info("查询数据库尝试更新库存");
         int count=stockMapper.updateByOptimistic(stock);
@@ -61,25 +98,20 @@ public class StockServiceImpl extends ServiceImpl<StockMapper, Stock> implements
 
     private Stock checkStock(int sid){
         Stock stock=stockMapper.selectById(sid);
-        LOGGER.info("刚进来时的库存为：{}",stock.getCount()-stock.getSale());
         if(stock.getSale()>=(stock.getCount())){
             throw new RuntimeException("库存不足");
         }
         return stock;
     }
 
-    private Stock checkStockAfterSale(int sid){
-        Stock stock=stockMapper.selectById(sid);
-        LOGGER.info("销售之后的库存为：{}",stock.getCount()-stock.getSale());
-        if(stock.getSale()>=(stock.getCount()+1)){
-            throw new RuntimeException("库存不足");
-        }
-        return stock;
-    }
+
 
     private void saleStock(int sid){
         LOGGER.info("扣减库存了");
-        stockMapper.updateSaleCnt(sid);
+        int cnt=stockMapper.updateSaleCnt(sid);
+        if(cnt==0){
+            throw new RuntimeException("没库存了");
+        }
     }
 
     private int createOrder(Stock stock){

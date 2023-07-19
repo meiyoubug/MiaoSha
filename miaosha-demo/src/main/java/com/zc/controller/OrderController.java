@@ -1,13 +1,11 @@
 package com.zc.controller;
 
 import com.alibaba.google.common.util.concurrent.RateLimiter;
+import com.sun.org.apache.bcel.internal.generic.LOOKUPSWITCH;
 import com.zc.service.StockService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.ResponseBody;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 
 import javax.annotation.Resource;
 import java.util.concurrent.TimeUnit;
@@ -73,6 +71,22 @@ public class OrderController {
             LOGGER.error("购买失败，库存不足");
         }
         return "购买成功";
+    }
+
+    @GetMapping("/createOrderWithVerifiedUrl/{sid}/{userId}/{verifyHash}")
+    @ResponseBody
+    public String createOrderWithVerifiedUrl(@PathVariable("sid") Integer sid,
+                                             @PathVariable("userId") Integer userId,
+                                             @PathVariable("verifyHash") String verifyHash) {
+        int stockLeft;
+        try {
+            stockLeft = stockService.createVerifiedOrder(sid, userId, verifyHash);
+            LOGGER.info("购买成功，剩余库存为：[{}]", stockLeft);
+        } catch (Exception e) {
+            LOGGER.error("购买失败：[{}]", e.getMessage());
+            return e.getMessage();
+        }
+        return "购买成功，剩余库存为：" + stockLeft;
     }
 
 

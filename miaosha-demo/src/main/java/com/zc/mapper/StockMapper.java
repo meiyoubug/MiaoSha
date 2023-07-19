@@ -13,6 +13,6 @@ import org.apache.ibatis.annotations.Param;
  * @since 2023-07-14
  */
 public interface StockMapper extends BaseMapper<Stock> {
-    void updateSaleCnt(@Param("sid") int sid);
+    int updateSaleCnt(@Param("sid") int sid);
     int updateByOptimistic(Stock stock);
 }

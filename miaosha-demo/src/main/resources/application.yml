@@ -18,6 +18,7 @@ spring:
     host: 42.192.62.205
     port: 6379
     database: 0
+    password: 86739043
   rabbitmq:
     host: localhost
     port: 5672

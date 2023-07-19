@@ -12,5 +12,5 @@ import com.baomidou.mybatisplus.extension.service.IService;
  * @since 2023-07-14
  */
 public interface UserService extends IService<User> {
-
+     String getVerifyHash(Integer sid,Integer userId) throws Exception;
 }

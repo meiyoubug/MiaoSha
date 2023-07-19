@@ -15,4 +15,6 @@ public interface StockService extends IService<Stock> {
      int createWrongOrder(int sid);
 
      int createOptimisticOrder(int sid);
+
+     int createVerifiedOrder(Integer sid,Integer userId,String verifyHash) throws Exception;
 }
