@@ -1616,11 +1616,91 @@ public class DelCacheByThread implements Runnable {
 
 上文提到了，要解决删除失败的问题，需要用到消息队列，进行删除操作的重试。这里我们为了达到效果，接入了RabbitMq，并且需要在接口中写发送消息，并且需要消费者常驻来消费消息。
 
-RabbitMqConfig
+- RabbitMqConfig
 
+```java
+import org.springframework.amqp.core.Queue;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 
+/**
+ * @program: MiaoSha
+ * @description:
+ * @author: ZC
+ * @create: 2023-07-20 15:38
+ **/
+@Configuration
+public class RabbitMqConfig {
+    @Bean
+    public Queue delCacheQueue(){
+        return new Queue("delCache");
+    }
+}
+```
 
+添加一个消费者：
 
+- DelCacheReceiver
+
+```java
+@Component
+@RabbitListener(queues = "delCache")
+public class DelCacheReceiver {
+    private static final Logger LOGGER= LoggerFactory.getLogger(DelCacheReceiver.class);
+
+    @Resource
+    private StockService stockService;
+
+    @RabbitHandler
+    public void process(String message){
+        LOGGER.info("DelCacheReceiver收到消息: " + message);
+        LOGGER.info("DelCacheReceiver开始删除缓存: " + message);
+        stockService.delStockCountCache(Integer.parseInt(message));
+    }
+}
+```
+
+- OrderController
+
+```java
+    @Resource
+    private RabbitTemplate rabbitTemplate;
+    /**
+     * 下单接口：先更新数据库，再删缓存，删除缓存重试机制
+     * @param sid
+     * @return
+     */
+    @RequestMapping("/createOrderWithCacheV4/{sid}")
+    @ResponseBody
+    public String createOrderWithCacheV4(@PathVariable int sid) {
+        int count;
+        try {
+            // 完成扣库存下单事务
+            count = stockService.createWrongOrder(sid);
+            // 删除库存缓存
+            stockService.delStockCountCache(sid);
+            // 延时指定时间后再次删除缓存
+            // threadPool.execut(new DelCacheByThread(sid));
+            // 假设上述再次删除缓存没成功，通知消息队列进行删除缓存
+            sendToDelCache(String.valueOf(sid));
+        } catch (Exception e) {
+            LOGGER.error("购买失败：[{}]", e.getMessage());
+            return "购买失败，库存不足";
+        }
+        LOGGER.info("购买成功，剩余库存为: [{}]", count);
+        return String.format("购买成功，剩余库存为：%d", count);
+    }
+    private void sendToDelCache(String message){
+        LOGGER.info("这就去通知消息队列开始重试删除缓存：[{}]", message);
+        rabbitTemplate.convertAndSend("delCache",message);
+    }
+```
+
+访问createOrderWithCacheV4：
+
+![image-20230720160847724](https://zcandyyj.oss-cn-hangzhou.aliyuncs.com/typora/images/image-20230720160847724.png)
+
+可以看到，我们先完成了下单，然后删除了缓存，并且假设延迟删除缓存失败了，发送给消息队列重试的消息，消息队列收到消息后再去删除缓存。
 
 > 读取binlog异步删除
 
