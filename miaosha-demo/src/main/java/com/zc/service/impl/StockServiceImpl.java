@@ -1,5 +1,6 @@
 package com.zc.service.impl;
 
+import com.sun.org.apache.bcel.internal.generic.LOOKUPSWITCH;
 import com.zc.entity.Stock;
 import com.zc.entity.StockOrder;
 import com.zc.mapper.StockMapper;
@@ -39,6 +40,35 @@ public class StockServiceImpl extends ServiceImpl<StockMapper, Stock> implements
     private static final String SALT = CacheKey.HASH_KEY.getKey();
 
     private static final Integer ALLOW_COUNT = 10;
+
+    @Override
+    public void delStockCountCache(int sid) {
+        String hashKey=CacheKey.GoodsKey.getKey()+"_"+sid;
+        stringRedisTemplate.delete(hashKey);
+        LOGGER.info("删除商品id：[{}]缓存",sid);
+    }
+
+    @Override
+    public void setStockCountToCache(int sid, int count) {
+        String hashKey = CacheKey.GoodsKey.getKey() + "_" + sid;
+        stringRedisTemplate.opsForValue().set(hashKey, String.valueOf(count));
+        LOGGER.info("Rides中存入的库存为：[{}]",count);
+    }
+
+    @Override
+    public Integer getStockCountByCache(int sid) {
+        String hashKey = CacheKey.GoodsKey.getKey() + "_" + sid;
+        String count = stringRedisTemplate.opsForValue().get(hashKey);
+        LOGGER.info("Rides中查询的库存为：[{}]",count);
+        if(count==null) return null;
+        return Integer.parseInt(count);
+    }
+
+    @Override
+    public int getStockCountByDB(int sid) {
+        Stock stock = stockMapper.selectById(sid);
+        return stock.getCount() - stock.getSale();
+    }
 
     @Override
     public int addUserCount(Integer userId) throws Exception {

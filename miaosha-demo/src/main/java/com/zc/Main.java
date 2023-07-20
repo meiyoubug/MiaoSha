@@ -34,7 +34,7 @@ public class Main {
         //生成文件是否在磁盘中打开
         globalConfig.setOpen(false);
         //生成代码的路径
-        globalConfig.setOutputDir(System.getProperty("user.dir")+"/src/main/java");
+        globalConfig.setOutputDir(System.getProperty("user.dir") + "/src/main/java");
         globalConfig.setAuthor("admin");
         //service命名规则 %s是表名 表名+Service
         globalConfig.setServiceName("%sService");

@@ -823,7 +823,806 @@ public class UserController {
 
 ## 5、缓存与数据库双写问题
 
+在秒杀实际的业务中，一定有很多需要做缓存的场景，比如售卖的商品，包括名称，详情等。访问量很大的数据，可以算是“热点”数据了，尤其是一些读取量远大于写入量的数据，更应该被缓存，而不应该让请求打到数据库上。
 
+> 为什么要使用缓存
+
+缓存是为了追求“快”而存在的。
+
+在之前的代码基础上，在其中增加两个查询库存的接口getStockByDB和getStockByCache，分别表示从数据库和缓存查询某商品的库存量。随后我们用JMeter进行并发请求测试。
+
+- StockService
+
+```java
+    void setStockCountToCache(int sid, int count);
+
+    Integer getStockCountByCache(int sid);
+
+    int getStockCountByDB(int sid);
+```
+
+
+
+- Impl
+
+```java
+    @Override
+    public void setStockCountToCache(int sid, int count) {
+        String hashKey = CacheKey.GoodsKey.getKey() + "_" + sid;
+        stringRedisTemplate.opsForValue().set(hashKey, String.valueOf(count));
+    }
+
+    @Override
+    public Integer getStockCountByCache(int sid) {
+        String hashKey = CacheKey.GoodsKey.getKey() + "_" + sid;
+        String count = stringRedisTemplate.opsForValue().get(hashKey);
+        return Integer.parseInt(count);
+    }
+
+    @Override
+    public int getStockCountByDB(int sid) {
+        Stock stock = stockMapper.selectById(sid);
+        return stock.getCount() - stock.getSale();
+    }
+```
+
+
+
+- OrderController
+
+```java
+    /**
+     * 查询库存：通过数据库查询库存
+     *
+     * @param sid sid
+     * @return {@link String}
+     */
+    @RequestMapping("/getStockByDB/{sid}")
+    @ResponseBody
+    public String getStockByDB(@PathVariable int sid) {
+        int count;
+        try {
+            count = stockService.getStockCountByDB(sid);
+        } catch (Exception e) {
+            LOGGER.error("查询库存失败：[{}]", e.getMessage());
+            return "查询库存失败";
+        }
+        LOGGER.info("商品id：[{}] 剩余库存为：[{}]", sid, count);
+        return String.format("商品Id: %d 剩余库存为：%d", sid, count);
+    }
+
+    /**
+     * 查询库存：通过缓存查询库存
+     * 缓存命中：返回库存
+     * 缓存未命中：查询数据库写入缓存并返回
+     *
+     * @param sid sid
+     * @return {@link String}
+     */
+    @RequestMapping("/getStockByCache/{sid}")
+    @ResponseBody
+    public String getStockByCache(@PathVariable int sid) {
+        Integer count;
+        try {
+            count = stockService.getStockCountByCache(sid);
+            if (count == null) {
+                count = stockService.getStockCountByDB(sid);
+                LOGGER.info("缓存未命中，查询数据库，并写入缓存");
+                stockService.setStockCountToCache(sid, count);
+            }
+        } catch (Exception e) {
+            LOGGER.error("查询库存失败：[{}]", e.getMessage());
+            return "查询库存失败";
+        }
+        LOGGER.info("商品Id: [{}] 剩余库存为: [{}]", sid, count);
+        return String.format("商品Id: %d 剩余库存为：%d", sid, count);
+    }
+```
+
+在设置为10000个并发请求的情况下，运行JMeter，我们在配置Application.yml的时候已经配置Tomcat的最大并发为10000了
+
+- 不使用缓存
+
+不使用缓存的情况下，吞吐量为141.1个请求每秒，并且有3.57%的请求由于服务压力实在太大，没有返回库存数据：
+
+![image-20230720135016127](https://zcandyyj.oss-cn-hangzhou.aliyuncs.com/typora/images/image-20230720135016127.png)
+
+- 使用缓存
+
+使用缓存的情况下，吞吐量为315.7，性能差不多提升3倍
+
+![image-20230720141109063](https://zcandyyj.oss-cn-hangzhou.aliyuncs.com/typora/images/image-20230720141109063.png)
+
+> 哪类数据适合缓存
+
+缓存量大但又不常变化的数据，比如详情，评论等。对于那些经常变化的数据，其实并不适合缓存，一方面会增加系统的复杂性（缓存的更新，缓存脏数据），另一方面也给系统带来一定的不稳定性（缓存系统的维护）。
+
+**「但一些极端情况下，你需要将一些会变动的数据进行缓存，比如想要页面显示准实时的库存数，或者其他一些特殊业务场景。这时候你需要保证缓存不能（一直）有脏数据，这就需要再深入讨论一下。」**
+
+> 缓存的利与弊
+
+我们到底该不该上缓存的，这其实也是个trade-off的问题。
+
+上缓存的优点：
+
+- 能够缩短服务的响应时间，给用户带来更好的体验。
+- 能够增大系统的吞吐量，依然能够提升用户体验。
+- 减轻数据库的压力，防止高峰期数据库被压垮，导致整个线上服务BOOM！
+
+上了缓存，也会引入很多额外的问题：
+
+- 缓存有多种选型，是内存缓存，memcached还是redis，你是否都熟悉，如果不熟悉，无疑增加了维护的难度（本来是个纯洁的数据库系统）。
+- 缓存系统也要考虑分布式，比如redis的分布式缓存还会有很多坑，无疑增加了系统的复杂性。
+- 在特殊场景下，如果对缓存的准确性有非常高的要求，就必须考虑**「缓存和数据库的一致性问题」**。
+
+
+
+> 缓存与数据库双写一致性
+
+- 不使用更新缓存而是删除缓存
+
+**「大部分观点认为，做缓存不应该是去更新缓存，而是应该删除缓存，然后由下个请求去去缓存，发现不存在后再读取数据库，写入缓存。」**
+
+《分布式之数据库和缓存双写一致性方案解析》孤独烟：
+
+> ❝
+>
+> **「原因一：线程安全角度」**
+>
+> 同时有请求A和请求B进行更新操作，那么会出现
+>
+> （1）线程A更新了数据库
+>
+> （2）线程B更新了数据库
+>
+> （3）线程B更新了缓存
+>
+> （4）线程A更新了缓存
+>
+> 这就出现请求A更新缓存应该比请求B更新缓存早才对，但是因为网络等原因，B却比A更早更新了缓存。这就导致了脏数据，因此不考虑。
+>
+> **「原因二：业务场景角度」**
+>
+> 有如下两点：
+>
+> （1）如果你是一个写数据库场景比较多，而读数据场景比较少的业务需求，采用这种方案就会导致，数据压根还没读到，缓存就被频繁的更新，浪费性能。
+>
+> （2）如果你写入数据库的值，并不是直接写入缓存的，而是要经过一系列复杂的计算再写入缓存。那么，每次写入数据库后，都再次计算写入缓存的值，无疑是浪费性能的。显然，删除缓存更为适合。
+>
+> ❞
+
+**「其实如果业务非常简单，只是去数据库拿一个值，写入缓存，那么更新缓存也是可以的。但是，淘汰缓存操作简单，并且带来的副作用只是增加了一次cache miss，建议作为通用的处理方式。」**
+
+-  先删除缓存，还是先删除数据库
+
+**「那么问题就来了，我们是先删除缓存，然后再更新数据库，还是先更新数据库，再删缓存呢？」**
+
+先来看看大佬们怎么说。
+
+《【58沈剑架构系列】缓存架构设计细节二三事》58沈剑：
+
+> ❝
+>
+> 对于一个不能保证事务性的操作，一定涉及“哪个任务先做，哪个任务后做”的问题，解决这个问题的方向是：如果出现不一致，谁先做对业务的影响较小，就谁先执行。
+>
+> 假设先淘汰缓存，再写数据库：第一步淘汰缓存成功，第二步写数据库失败，则只会引发一次Cache miss。
+>
+> 假设先写数据库，再淘汰缓存：第一步写数据库操作成功，第二步淘汰缓存失败，则会出现DB中是新数据，Cache中是旧数据，数据不一致。
+>
+> ❞
+
+沈剑老师说的没有问题，不过**「没完全考虑好并发请求时的数据脏读问题」**，让我们再来看看孤独烟老师《分布式之数据库和缓存双写一致性方案解析》：
+
+> ❝
+>
+> **「先删缓存，再更新数据库」**
+>
+> 该方案会导致请求数据不一致
+>
+> 同时有一个请求A进行更新操作，另一个请求B进行查询操作。那么会出现如下情形:
+>
+> （1）请求A进行写操作，删除缓存
+>
+> （2）请求B查询发现缓存不存在
+>
+> （3）请求B去数据库查询得到旧值
+>
+> （4）请求B将旧值写入缓存
+>
+> （5）请求A将新值写入数据库
+>
+> 上述情况就会导致不一致的情形出现。而且，如果不采用给缓存设置过期时间策略，该数据永远都是脏数据。
+>
+> ❞
+
+**「所以先删缓存，再更新数据库并不是一劳永逸的解决方案，再看看先更新数据库，再删缓存」**
+
+> ❝
+>
+> **「先更新数据库，再删缓存」**这种情况不存在并发问题么？
+>
+> 不是的。假设这会有两个请求，一个请求A做查询操作，一个请求B做更新操作，那么会有如下情形产生
+>
+> （1）缓存刚好失效
+>
+> （2）请求A查询数据库，得一个旧值
+>
+> （3）请求B将新值写入数据库
+>
+> （4）请求B删除缓存
+>
+> （5）请求A将查到的旧值写入缓存
+>
+> ok，如果发生上述情况，确实是会发生脏数据。
+>
+> 然而，发生这种情况的概率又有多少呢？
+>
+> 发生上述情况有一个先天性条件，就是步骤（3）的写数据库操作比步骤（2）的读数据库操作耗时更短，才有可能使得步骤（4）先于步骤（5）。可是，大家想想，**「数据库的读操作的速度远快于写操作的（不然做读写分离干嘛，做读写分离的意义就是因为读操作比较快，耗资源少），因此步骤（3）耗时比步骤（2）更短，这一情形很难出现。」**
+>
+> ❞
+
+**「先更新数据库，再删缓存」**依然会有问题，不过，问题出现的可能性会因为上面说的原因，变得比较低！
+
+所以，如果你想实现基础的缓存数据库双写一致的逻辑，那么在大多数情况下，在不想做过多设计，增加太大工作量的情况下，请**「先更新数据库，再删缓存!」**
+
+- 一定要数据库和缓存数据一致怎么办
+
+那么，如果我tm非要保证绝对一致性怎么办，先给出结论：
+
+**「没有办法做到绝对的一致性，这是由CAP理论决定的，缓存系统适用的场景就是非强一致性的场景，所以它属于CAP中的AP。」**
+
+所以，我们得委曲求全，可以去做到BASE理论中说的**「最终一致性」**。
+
+> ❝
+>
+> 最终一致性强调的是系统中所有的数据副本，在经过一段时间的同步后，最终能够达到一个一致的状态。因此，最终一致性的本质是需要系统保证最终数据能够达到一致，而不需要实时保证系统数据的强一致性
+>
+> ❞
+
+大佬们给出了到达最终一致性的解决思路，主要是针对上面两种双写策略（先删缓存，再更新数据库/先更新数据库，再删缓存）导致的脏数据问题，进行相应的处理，来保证最终一致性。
+
+> 延时双删
+
+问：先删除缓存，再更新数据库中避免脏数据？
+
+答案：采用延时双删策略。
+
+上文我们提到，在先删除缓存，再更新数据库的情况下，如果不采用给缓存设置过期时间策略，该数据永远都是脏数据。
+
+**「那么延时双删怎么解决这个问题呢？」**
+
+> ❝
+>
+> （1）先淘汰缓存
+>
+> （2）再写数据库（这两步和原来一样）
+>
+> （3）休眠1秒，再次淘汰缓存
+>
+> 这么做，可以将1秒内所造成的缓存脏数据，再次删除。
+>
+> ❞
+
+**「那么，这个1秒怎么确定的，具体该休眠多久呢？」**
+
+> ❝
+>
+> 针对上面的情形，读者应该自行评估自己的项目的读数据业务逻辑的耗时。然后写数据的休眠时间则在读数据业务逻辑的耗时基础上，加几百ms即可。这么做的目的，就是确保读请求结束，写请求可以删除读请求造成的缓存脏数据。
+>
+> ❞
+
+**「如果你用了mysql的读写分离架构怎么办？」**
+
+> ❝
+>
+> ok，在这种情况下，造成数据不一致的原因如下，还是两个请求，一个请求A进行更新操作，另一个请求B进行查询操作。
+>
+> （1）请求A进行写操作，删除缓存
+>
+> （2）请求A将数据写入数据库了，
+>
+> （3）请求B查询缓存发现，缓存没有值
+>
+> （4）请求B去从库查询，这时，还没有完成主从同步，因此查询到的是旧值
+>
+> （5）请求B将旧值写入缓存
+>
+> （6）数据库完成主从同步，从库变为新值
+>
+> 上述情形，就是数据不一致的原因。还是使用双删延时策略。只是，睡眠时间修改为在主从同步的延时时间基础上，加几百ms。
+>
+> ❞
+
+**「采用这种同步淘汰策略，吞吐量降低怎么办？」**
+
+> ❝
+>
+> ok，那就将第二次删除作为异步的。自己起一个线程，异步删除。这样，写的请求就不用沉睡一段时间后了，再返回。这么做，加大吞吐量。
+>
+> ❞
+
+**「所以在先删除缓存，再更新数据库的情况下」**，可以使用延时双删的策略，来保证脏数据只会存活一段时间，就会被准确的数据覆盖。
+
+**「在先更新数据库，再删缓存的情况下」**，缓存出现脏数据的情况虽然可能性极小，但也会出现。我们依然可以用延时双删策略，在请求A对缓存写入了脏的旧值之后，再次删除缓存。来保证去掉脏缓存。
+
+> 删缓存失败了怎么办：重试机制
+
+看似问题都已经解决了，但其实，还有一个问题没有考虑到，那就是删除缓存的操作，失败了怎么办？比如延时双删的时候，第二次缓存删除失败了，那不还是没有清除脏数据吗？
+
+**「解决方案就是再加上一个重试机制，保证删除缓存成功。」**
+
+参考孤独烟老师给的方案图：
+
+**「方案一：」**
+
+![图片](https://zcandyyj.oss-cn-hangzhou.aliyuncs.com/typora/images/640-20230720141802970.png)
+
+> ❝
+>
+> 流程如下所示
+>
+> （1）更新数据库数据；
+>
+> （2）缓存因为种种问题删除失败
+>
+> （3）将需要删除的key发送至消息队列
+>
+> （4）自己消费消息，获得需要删除的key
+>
+> （5）继续重试删除操作，直到成功
+>
+> 然而，该方案有一个缺点，对业务线代码造成大量的侵入。于是有了方案二，在方案二中，启动一个订阅程序去订阅数据库的binlog，获得需要操作的数据。在应用程序中，另起一段程序，获得这个订阅程序传来的信息，进行删除缓存操作。
+>
+> ❞
+
+方案二：
+
+![图片](https://zcandyyj.oss-cn-hangzhou.aliyuncs.com/typora/images/640-20230720141803021.png)
+
+> ❝
+>
+> 流程如下图所示：
+>
+> （1）更新数据库数据
+>
+> （2）数据库会将操作信息写入binlog日志当中
+>
+> （3）订阅程序提取出所需要的数据以及key
+>
+> （4）另起一段非业务代码，获得该信息
+>
+> （5）尝试删除缓存操作，发现删除失败
+>
+> （6）将这些信息发送至消息队列
+>
+> （7）重新从消息队列中获得该数据，重试操作。
+>
+> ❞
+
+**「而读取binlog的中间件，可以采用阿里开源的canal」**
+
+好了，到这里我们已经把缓存双写一致性的思路彻底梳理了一遍，下面就是我对这几种思路徒手写的实战代码，方便有需要的朋友参考。
+
+### 实战
+
+> 先删除缓存，再更新数据库
+
+- StockService
+
+```java
+void delStockCountCache(int sid);
+```
+
+- Impl
+
+```java
+    @Override
+    public void delStockCountCache(int sid) {
+        String hashKey=CacheKey.GoodsKey.getKey()+"_"+sid;
+        stringRedisTemplate.delete(hashKey);
+        LOGGER.info("删除商品id：[{}]缓存",sid);
+    }
+```
+
+- OrderController
+
+```java
+    /**
+     * 下单接口：先删除缓存，再更新数据库
+     *
+     * @param sid sid
+     * @return {@link String}
+     */
+    @RequestMapping("/createOrderWithCacheV1/{sid}")
+    @ResponseBody
+    public String createOrderWithCacheV1(@PathVariable int sid) {
+        int count = 0;
+        try {
+            //删除缓存
+            stockService.delStockCountCache(sid);
+            //完成扣库存下单事务
+            stockService.createWrongOrder(sid);
+        } catch (Exception e) {
+            LOGGER.info("购买失败：[{}]", e.getMessage());
+            return "购买失败";
+        }
+        LOGGER.info("购买成功，剩余库存为: [{}]", count);
+        return String.format("购买成功，剩余库存为：%d", count);
+    }
+```
+
+> 先更新数据库，再删除缓存
+
+- OrderController
+
+```java
+ /**
+     * 下单接口：先更新数据库，再删缓存
+     *
+     * @param sid sid
+     * @return {@link String}
+     */
+    @RequestMapping("/createOrderWithCacheV2/{sid}")
+    @ResponseBody
+    public String createOrderWithCacheV2(@PathVariable int sid) {
+        int count = 0;
+        try {
+
+            //完成扣库存下单事务
+            stockService.createWrongOrder(sid);
+
+            //删除缓存
+            stockService.delStockCountCache(sid);
+        } catch (Exception e) {
+            LOGGER.info("购买失败：[{}]", e.getMessage());
+            return "购买失败";
+        }
+        LOGGER.info("购买成功，剩余库存为: [{}]", count);
+        return String.format("购买成功，剩余库存为：%d", count);
+    }
+```
+
+> 缓存延时双删
+
+如何做延时双删呢，最好的方法是开设一个线程池，在线程中删除key，而不是使用Thread.sleep进行等待，这样会阻塞用户的请求。
+
+更新前先删除缓存，然后更新数据，再延时删除缓存。
+
+![image-20230720145804785](https://zcandyyj.oss-cn-hangzhou.aliyuncs.com/typora/images/image-20230720145804785.png)
+
+将线程池交给Spring容器管理
+
+- MyThreadFactory
+
+```java
+public class MyThreadFactory  implements ThreadFactory {
+    @Override
+    public Thread newThread(Runnable r) {
+        Thread newThread=new Thread(r);
+        return  newThread;
+    }
+}
+```
+
+- ThreadRejectedExecutionHandler
+
+```java
+public class ThreadRejectedExecutionHandler implements RejectedExecutionHandler {
+
+    /**
+    * @Description: 饱和策略一：调用者线程执行策略
+    * @Param: 在该策略下,在调用者中执行被拒绝任务的run方法。除非线程池showdown，否则直接丢弃线程
+    * @return:
+    * @Author: ZC
+    * @Date: 2023/5/21
+    */
+    @Override
+    public void rejectedExecution(Runnable r, ThreadPoolExecutor executor) {}
+
+
+    /**
+     * 饱和策略一：调用者线程执行策略
+     * 在该策略下，在调用者中执行被拒绝任务的run方法。除非线程池showdown，否则直接丢弃线程
+     */
+    public static class CallerRunsPolicy extends ThreadRejectedExecutionHandler {
+        @Override
+        public void rejectedExecution(Runnable r, ThreadPoolExecutor executor) {
+            //判断线程池是否在正常运行，如果线程池在正常运行则由调用者线程执行被拒绝的任务。如果线程池停止运行，则直接丢弃该任务
+            if (!executor.isShutdown()){
+                r.run();
+            }
+        }
+    }
+
+
+    /**
+     * 饱和策略二：终止策略
+     * 在该策略下，丢弃被拒绝的任务，并抛出拒绝执行异常
+     */
+    public static class AbortPolicy extends ThreadRejectedExecutionHandler {
+        @Override
+        public void rejectedExecution(Runnable r, ThreadPoolExecutor executor) {
+            throw new RejectedExecutionException("请求任务：" + r.toString() + "，线程池负载过高执行饱和终止策略！");
+        }
+    }
+
+
+    /**
+     * 饱和策略三：丢弃策略
+     * 在该策略下，什么都不做直接丢弃被拒绝的任务
+     */
+    public static class DiscardPolicy extends ThreadRejectedExecutionHandler {
+        @Override
+        public void rejectedExecution(Runnable r, ThreadPoolExecutor executor) {
+
+        }
+    }
+
+
+    /**
+     * 饱和策略四：弃老策略
+     * 在该策略下，丢弃最早放入阻塞队列中的线程，并尝试将拒绝任务加入阻塞队列
+     */
+    public static class DiscardOldestPolicy extends ThreadRejectedExecutionHandler {
+        @Override
+        public void rejectedExecution(Runnable r, ThreadPoolExecutor executor) {
+            //判断线程池是否正常运行，如果线程池正常运行则弹出（或丢弃）最早放入阻塞队列中的任务，并尝试将拒绝任务加入阻塞队列。如果线程池停止运行，则直接丢弃该任务
+            if (!executor.isShutdown()){
+                executor.getQueue().poll();
+                executor.execute(r);
+            }
+        }
+    }
+
+}
+```
+
+- ThreadPool
+
+```java
+@Component
+public class ThreadPool{
+    /**
+     * 系统可用计算资源
+     */
+    private static final  int CPU_COUNT=Runtime.getRuntime().availableProcessors();
+
+
+    /**
+     * 核心线程数
+     */
+    private static final int CORE_POOL_SIZE=Math.max(2,Math.min(CPU_COUNT-1,4));
+
+    /**
+     * 最大线程数
+     */
+    private static final int MAXIMUM_POOL_SIZE=CPU_COUNT*2+1;
+
+    /**
+     * 线程最大空闲存活时间
+     */
+    private static final int KEEP_ALIVE_SECONDS = 30;
+
+    /**
+     * 工作队列
+     */
+    private static final BlockingQueue<Runnable> POOL_WORK_QUEUE = new LinkedBlockingQueue<>(2);
+
+
+    /**
+     * 工厂模式
+     */
+    private static final MyThreadFactory MY_THREAD_FACTORY = new MyThreadFactory();
+
+
+    /**
+     * 饱和策略
+     */
+    private static final ThreadRejectedExecutionHandler THREAD_REJECTED_EXECUTION_HANDLER = new ThreadRejectedExecutionHandler.CallerRunsPolicy();
+
+
+    /**
+     * 线程池对象
+     */
+    private static final ThreadPoolExecutor THREAD_POOL_EXECUTOR;
+
+    /**
+     * 声明式定义线程池工具类对象静态变量，在所有线程中同步
+     */
+    private static volatile ThreadPool threadPool = null;
+
+
+    /**
+     * 初始化线程池静态代码块
+     */
+    static {
+        THREAD_POOL_EXECUTOR = new ThreadPoolExecutor(
+                //核心线程数
+                CORE_POOL_SIZE,
+                //最大线程数
+                MAXIMUM_POOL_SIZE,
+                //空闲线程执行时间
+                KEEP_ALIVE_SECONDS,
+                //空闲线程执行时间单位
+                TimeUnit.SECONDS,
+                //工作队列（或阻塞队列）
+                POOL_WORK_QUEUE,
+                //工厂模式
+                MY_THREAD_FACTORY,
+                //饱和策略
+                THREAD_REJECTED_EXECUTION_HANDLER
+        );
+    }
+
+    /**
+     * 线程池工具类空参构造方法
+     */
+    public ThreadPool() {}
+
+
+
+    /**
+     * 获取线程池工具类实例
+     */
+    @Bean
+    public ThreadPool getNewInstance(){
+        if (threadPool == null) {
+            synchronized (ThreadPool.class) {
+                if (threadPool == null) {
+                    threadPool = new ThreadPool();
+                }
+            }
+        }
+        return threadPool;
+    }
+
+    /**
+     * 获得当前活动线程数
+     *
+     * @return int
+     */
+    public int getCorePoolSize(){
+        return THREAD_POOL_EXECUTOR.getActiveCount();
+    }
+
+
+    /**
+     * 获得全当前任务总数
+     *
+     * @return int
+     */
+    public int getTaskNum(){
+        return THREAD_POOL_EXECUTOR.getQueue().size();
+    }
+
+    /**
+     * 执行任务线程
+     */
+    public void execut(Runnable runnable) {
+        THREAD_POOL_EXECUTOR.execute(runnable);
+    }
+
+    public <T> Future<T> submit(Callable<T> callable){
+        return THREAD_POOL_EXECUTOR.submit(callable);
+    }
+
+
+    /**
+     * 获取线程池状态
+     * @return 返回线程池状态
+     */
+    public boolean isShutDown(){
+        return THREAD_POOL_EXECUTOR.isShutdown();
+    }
+
+    /**
+     * 停止正在执行的线程任务
+     * @return 返回等待执行的任务列表
+     */
+    public List<Runnable> shutDownNow(){
+        return THREAD_POOL_EXECUTOR.shutdownNow();
+    }
+
+    /**
+     * 关闭线程池
+     */
+    public void shutDown(){
+        THREAD_POOL_EXECUTOR.shutdown();
+    }
+
+
+    /**
+     * 关闭线程池后判断所有任务是否都已完成
+     * @return
+     */
+    public boolean isTerminated(){
+        return THREAD_POOL_EXECUTOR.isTerminated();
+    }
+}
+```
+
+- DelCacheByThread
+
+![image-20230720153618024](https://zcandyyj.oss-cn-hangzhou.aliyuncs.com/typora/images/image-20230720153618024.png)
+
+```java
+public class DelCacheByThread implements Runnable {
+
+    @Resource
+    private StockService stockService;
+    private static final Logger LOGGER = LoggerFactory.getLogger(DelCacheByThread.class);
+    private static final int DELAY_MILLSECONDS = 1000;
+    private int sid;
+
+    public DelCacheByThread(int sid) {
+        this.sid = sid;
+    }
+
+    @Override
+    public void run() {
+        try {
+            LOGGER.info("异步执行缓存再删除，商品id：[{}]， 首先休眠：[{}] 毫秒", sid, DELAY_MILLSECONDS);
+            Thread.sleep(DELAY_MILLSECONDS);
+            stockService.delStockCountCache(sid);
+            LOGGER.info("再次删除商品id：[{}] 缓存", sid);
+        } catch (Exception e) {
+            LOGGER.error("delCacheByThread执行出错", e);
+        }
+    }
+}
+```
+
+
+
+- OrderController
+
+```java
+ @Resource
+    private ThreadPool threadPool;
+
+
+    /**
+     * 每秒放行10个请求
+     */
+    RateLimiter rateLimiter = RateLimiter.create(10);
+
+    /**
+     * 下单接口：先删除缓存，再更新数据库，缓存延时双删
+     *
+     * @param sid sid
+     * @return {@link String}
+     */
+    @RequestMapping("/createOrderWithCacheV3/{sid}")
+    @ResponseBody
+    public String createOrderWithCacheV3(@PathVariable int sid) {
+        int count;
+        try {
+            // 删除库存缓存
+            stockService.delStockCountCache(sid);
+            // 完成扣库存下单事务
+            count = stockService.createWrongOrder(sid);
+            // 延时指定时间后再次删除缓存
+            threadPool.execut(new DelCacheByThread(sid));
+        } catch (Exception e) {
+            LOGGER.error("购买失败：[{}]", e.getMessage());
+            return "购买失败，库存不足";
+        }
+        LOGGER.info("购买成功，剩余库存为: [{}]", count);
+        return String.format("购买成功，剩余库存为：%d", count);
+    }
+```
+
+> 删除缓存重试机制
+
+上文提到了，要解决删除失败的问题，需要用到消息队列，进行删除操作的重试。这里我们为了达到效果，接入了RabbitMq，并且需要在接口中写发送消息，并且需要消费者常驻来消费消息。
+
+RabbitMqConfig
+
+
+
+
+
+> 读取binlog异步删除
 
 
 

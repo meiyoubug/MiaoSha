@@ -5,20 +5,27 @@ import com.baomidou.mybatisplus.extension.service.IService;
 
 /**
  * <p>
- *  服务类
+ * 服务类
  * </p>
  *
  * @author admin
  * @since 2023-07-14
  */
 public interface StockService extends IService<Stock> {
-     int addUserCount(Integer userId) throws Exception;
+    void delStockCountCache(int sid);
+    void setStockCountToCache(int sid, int count);
 
-     boolean getUserIsBanned(Integer userId);
+    Integer getStockCountByCache(int sid);
 
-     int createWrongOrder(int sid);
+    int getStockCountByDB(int sid);
 
-     int createOptimisticOrder(int sid);
+    int addUserCount(Integer userId) throws Exception;
 
-     int createVerifiedOrder(Integer sid,Integer userId,String verifyHash) throws Exception;
+    boolean getUserIsBanned(Integer userId);
+
+    int createWrongOrder(int sid);
+
+    int createOptimisticOrder(int sid);
+
+    int createVerifiedOrder(Integer sid, Integer userId, String verifyHash) throws Exception;
 }
