@@ -98,14 +98,7 @@ public class ThreadPool{
      */
     @Bean
     public ThreadPool getNewInstance(){
-        if (threadPool == null) {
-            synchronized (ThreadPool.class) {
-                if (threadPool == null) {
-                    threadPool = new ThreadPool();
-                }
-            }
-        }
-        return threadPool;
+        return new ThreadPool();
     }
 
     /**

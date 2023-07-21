@@ -1,11 +1,9 @@
 package com.zc.controller;
 
 import com.alibaba.google.common.util.concurrent.RateLimiter;
-
-import com.zc.receiver.DelCacheReceiver;
 import com.zc.service.StockService;
 import com.zc.threadPool.ThreadPool;
-import com.zc.utils.DelCacheByThread;
+import com.zc.utils.CanalClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
@@ -31,6 +29,8 @@ public class OrderController {
     private ThreadPool threadPool;
     @Resource
     private RabbitTemplate rabbitTemplate;
+    @Resource
+    private CanalClient client;
 
     /**
      * 每秒放行10个请求
@@ -38,6 +38,30 @@ public class OrderController {
     RateLimiter rateLimiter = RateLimiter.create(10);
 
 
+
+    /**
+     * 下单接口：先更新数据库，canal删除缓存，删除缓存重试机制
+     * @param sid
+     * @return
+     */
+    @RequestMapping("/createOrderWithCacheV5/{sid}")
+    @ResponseBody
+    public String createOrderWithCacheV5(@PathVariable int sid) {
+        int count;
+        try {
+            // 完成扣库存下单事务
+            count = stockService.createWrongOrder(sid);
+            // 通过canal删除缓存
+            client.delCacheByCanal("m4a_miaosha","stock");
+            // 假设上述再次删除缓存没成功，通知消息队列进行删除缓存
+            sendToDelCache(String.valueOf(sid));
+        } catch (Exception e) {
+            LOGGER.error("购买失败：[{}]", e.getMessage());
+            return "购买失败，库存不足";
+        }
+        LOGGER.info("购买成功，剩余库存为: [{}]", count);
+        return String.format("购买成功，剩余库存为：%d", count);
+    }
 
     /**
      * 下单接口：先更新数据库，再删缓存，删除缓存重试机制
@@ -86,7 +110,7 @@ public class OrderController {
             // 完成扣库存下单事务
             count = stockService.createWrongOrder(sid);
             // 延时指定时间后再次删除缓存
-            threadPool.execut(new DelCacheByThread(sid));
+//            threadPool.execut(new DelCacheByThread(sid));
         } catch (Exception e) {
             LOGGER.error("购买失败：[{}]", e.getMessage());
             return "购买失败，库存不足";

@@ -295,7 +295,7 @@ public class OrderController {
 
 ```xml
  <update id="updateSaleCnt">
-       update stock set sale=sale+1 where id=#{sid}
+       update stock set sale=sale+1 where sale&lt;=count-1 and id=#{sid}
  </update>
 ```
 
@@ -1541,39 +1541,6 @@ public class ThreadPool{
 }
 ```
 
-- DelCacheByThread
-
-![image-20230720153618024](https://zcandyyj.oss-cn-hangzhou.aliyuncs.com/typora/images/image-20230720153618024.png)
-
-```java
-public class DelCacheByThread implements Runnable {
-
-    @Resource
-    private StockService stockService;
-    private static final Logger LOGGER = LoggerFactory.getLogger(DelCacheByThread.class);
-    private static final int DELAY_MILLSECONDS = 1000;
-    private int sid;
-
-    public DelCacheByThread(int sid) {
-        this.sid = sid;
-    }
-
-    @Override
-    public void run() {
-        try {
-            LOGGER.info("异步执行缓存再删除，商品id：[{}]， 首先休眠：[{}] 毫秒", sid, DELAY_MILLSECONDS);
-            Thread.sleep(DELAY_MILLSECONDS);
-            stockService.delStockCountCache(sid);
-            LOGGER.info("再次删除商品id：[{}] 缓存", sid);
-        } catch (Exception e) {
-            LOGGER.error("delCacheByThread执行出错", e);
-        }
-    }
-}
-```
-
-
-
 - OrderController
 
 ```java
@@ -1609,6 +1576,27 @@ public class DelCacheByThread implements Runnable {
         }
         LOGGER.info("购买成功，剩余库存为: [{}]", count);
         return String.format("购买成功，剩余库存为：%d", count);
+    }
+
+    class DelCacheByThread implements Runnable {
+        private static final int DELAY_MILLSECONDS = 1000;
+        private int sid;
+        public DelCacheByThread(int sid) {
+            this.sid = sid;
+        }
+        @Override
+        public void run() {
+            try {
+                LOGGER.info("异步执行缓存再删除，商品id：[{}]， 首先休眠：[{}] 毫秒", sid, DELAY_MILLSECONDS);
+                Thread.sleep(DELAY_MILLSECONDS);
+                //删除缓存
+                stockService.delStockCountCache(sid);
+                LOGGER.info("再次删除商品id：[{}] 缓存", sid);
+            } catch (Exception e) {
+                LOGGER.error("delCacheByThread执行出错", e);
+            }
+        }
+
     }
 ```
 
@@ -1704,11 +1692,572 @@ public class DelCacheReceiver {
 
 > 读取binlog异步删除
 
+我的是mysql8.0.30
+
+- 配置mysql为master
+
+```shell
+show variables like 'log_bin%'; //查看是否打开bin_log
+```
+
+![image-20230720210137045](https://zcandyyj.oss-cn-hangzhou.aliyuncs.com/typora/images/image-20230720210137045.png)
+
+如果是off状态，需要去配置文件开启
+
+```
+sudo vi /etc/mysql/mysql.conf.d/mysqld.cnf
+```
+
+在文件末尾添加：
+
+```
+log-bin=/var/lib/mysql/mysql-bin
+binlog-format=ROW
+server-id=2 # mysql5.7以上添加这行
+```
+
+保存文件，重启mysql服务：
+
+```
+sudo service mysql restart
+```
+
+为canal创建账号
+
+```shell
+mysql> use mysql;
+Reading table information for completion of table and column names
+You can turn off this feature to get a quicker startup with -A
+
+Database changed
+mysql> select host,user,plugin from user;
++-----------+------------------+-----------------------+
+| host      | user             | plugin                |
++-----------+------------------+-----------------------+
+| %         | canal            | mysql_native_password |
+| localhost | mysql.infoschema | caching_sha2_password |
+| localhost | mysql.session    | caching_sha2_password |
+| localhost | mysql.sys        | caching_sha2_password |
+| localhost | root             | caching_sha2_password |
++-----------+------------------+-----------------------+
+5 rows in set (0.00 sec)
+create user 'canal'@'%' identified with mysql_native_password BY '密码';
+
+GRANT SELECT, REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'canal'@'%';
+
+FLUSH PRIVILEGES;
+
+show grants for 'canal'
+
+```
+
+去Github下载最近的Canal稳定版本包：
+
+- https://github.com/alibaba/canal/releases
+
+解压缩：
+
+```
+mkdir /tmp/canal
+tar zxvf canal.deployer-$version.tar.gz  -C /tmp/canal
+```
+
+配置文件设置：
+
+主要有两个文件配置，一个是`conf/canal.properties`一个是`conf/example/instance.properties`。
+
+为了快速运行Demo，只修改`conf/example/instance.properties`里的数据库连接账号密码即可
+
+```shell
+# username/password
+canal.instance.dbUsername=canal
+canal.instance.dbPassword=xxxxxxx #上面你创建的密码
+canal.instance.connectionCharset = UTF-8
+```
+
+请先确保机器上有JDK，接着运行Canal启动脚本：
+
+```
+sh bin/startup.sh
+```
+
+下图即成功运行：
+
+![图片](https://zcandyyj.oss-cn-hangzhou.aliyuncs.com/typora/images/640-20230720210651129.png)
+
+**Java客户端代码**
+
+- application.yml
+
+```java
+canal:
+  ip: 127.0.0.1
+  port: 11111
+  destination: example
+  username:
+  password:
+```
+
+
+
+- CanalConnector
+
+```java
+@Component
+public class CanalConnector {
+    @Value("${canal.ip}")
+    private String ip;
+    @Value("${canal.port}")
+    private int port;
+    @Value("${canal.destination}")
+    private String destination;
+    @Value("${canal.username}")
+    private String username;
+    @Value("${canal.password}")
+    private String password;
+
+    @Bean
+    public com.alibaba.otter.canal.client.CanalConnector newInstance(){
+        return CanalConnectors.newSingleConnector(new InetSocketAddress(ip, port),
+                destination, username, password);
+    }
+```
+
+- CanalClient
+
+`注意`：delCacheByCanal在并发的情况下，必须使用synchronized关键字，保证每次只能进来一个线程
+
+```java
+import com.alibaba.otter.canal.client.CanalConnector;
+import com.alibaba.otter.canal.protocol.CanalEntry;
+import com.alibaba.otter.canal.protocol.Message;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.stereotype.Component;
+
+import javax.annotation.Resource;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+
+/**
+ * @program: MiaoSha
+ * @description:
+ * @author: ZC
+ * @create: 2023-07-20 21:18
+ **/
+@Component
+public class CanalClient {
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
+    private static final Logger LOGGER = LoggerFactory.getLogger(CanalClient.class);
+    @Resource
+    private CanalConnector connector;
+
+
+    /**
+     * 通过canal删除Redis缓存
+     */
+    public synchronized void delCacheByCanal(String schemaName, String tableName)   {
+        boolean isDeleted = false;
+        //连接canal
+        connector.connect();
+        //订阅canal
+        connector.subscribe();
+        // 每次读取 1000 条
+        Message message = connector.getWithoutAck(1000);
+        long batchID = message.getId();
+        int size = message.getEntries().size();
+        if (batchID == -1 || size == 0) {
+            return;
+        } else {
+            //处理日志
+            dealEntrys(message.getEntries(), schemaName, tableName);
+        }
+
+        connector.ack(batchID);
+    }
+
+    /**
+     * 处理日志
+     *
+     * @param entrys 条目
+     */
+    private void dealEntrys(List<CanalEntry.Entry> entrys, String schemaName, String tableName) {
+        boolean isDeleted = false;
+        AtomicInteger id = new AtomicInteger();
+        CanalEntry.Header header = null;
+        CanalEntry.EntryType entryType = null;
+        CanalEntry.RowChange rowChange = null;
+        for (CanalEntry.Entry entry : entrys) {
+            header = entry.getHeader();
+            entryType = entry.getEntryType();
+            if (entryType == CanalEntry.EntryType.ROWDATA) {
+                //获取表名
+                String table = header.getTableName();
+                //获取数据库名
+                String schema = header.getSchemaName();
+                //符合我们传入的数据库和表名
+                if (schemaName.equals(schema) && tableName.equals(table)) {
+                    try {
+                        rowChange = CanalEntry.RowChange.parseFrom(entry.getStoreValue());
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                    }
+                    //获取事件类型 增删改查
+                    CanalEntry.EventType eventType = rowChange.getEventType();
+
+                    //追踪到columns级别
+                    rowChange.getRowDatasList().forEach(rowData -> {
+                        // 获取更新之后的 column 情况
+                        List<CanalEntry.Column> afterColumns = rowData.getAfterColumnsList();
+                        // 执行的是更新操作
+                        if (eventType == CanalEntry.EventType.UPDATE) {
+                            // 删除缓存
+                            afterColumns.forEach(column -> {
+                                String columnName = column.getName();
+                                String columnValue = column.getValue();
+                                if ("id".equals(columnName)) {
+                                    id.set(Integer.parseInt(columnValue));
+                                }
+                                //删除缓存
+                                String hashKey = CacheKey.GoodsKey.getKey() + "_" + id;
+                                stringRedisTemplate.delete(hashKey);
+                            });
+
+                        }
+                    });
+                }
+            }
+        }
+    }
+
+}
+```
+
+- OrderController
+
+```java
+    @Resource
+    private CanalClient client;
+   /**
+     * 下单接口：先更新数据库，canal删除缓存，删除缓存重试机制
+     * @param sid
+     * @return
+     */
+    @RequestMapping("/createOrderWithCacheV5/{sid}")
+    @ResponseBody
+    public String createOrderWithCacheV5(@PathVariable int sid) {
+        int count;
+        try {
+            // 完成扣库存下单事务
+            count = stockService.createWrongOrder(sid);
+            // 通过canal删除缓存
+            client.delCacheByCanal("m4a_miaosha","stock");
+        } catch (Exception e) {
+            LOGGER.error("购买失败：[{}]", e.getMessage());
+            return "购买失败，库存不足";
+        }
+        LOGGER.info("购买成功，剩余库存为: [{}]", count);
+        return String.format("购买成功，剩余库存为：%d", count);
+    }
+```
+
+> 总结
+
+- 对于读多写少的数据，请使用缓存。
+- 为了保持一致性，会导致系统吞吐量的下降。
+- 为了保持一致性，会导致业务代码逻辑复杂。
+- 缓存做不到绝对一致性，但可以做到最终一致性。
+- 对于需要保证缓存数据库数据一致的情况，请尽量考虑对一致性到底有多高要求，选定合适的方案，避免过度设计。
+
+## 6、将上述知识点整合，并用到一个接口里
+
+- StockOrderService
+
+```java
+public interface StockOrderService extends IService<StockOrder> {
+    /**
+     * 创建订单,sid
+     *
+     * @param userId 用户id
+     * @param sid    sid
+     * @return {@link String}
+     */
+    String createOrderBySid(int userId,int sid) throws Exception;
+
+
+    /**
+     * 生成key
+     *
+     * @param sid sid
+     * @return {@link String}
+     */
+    String returnGoodsHashKey(int sid);
+
+    /**
+     * 检查库存
+     *
+     * @param sid sid
+     * @return boolean
+     */
+    boolean checkCount(int sid);
+
+    /**
+     * 验证用户是否有效
+     *
+     * @param userId 用户id
+     * @return boolean
+     */
+    boolean verifyUser(int userId);
+
+    /**
+     * 向缓存中添加库存
+     *
+     * @param sid   sid
+     * @param count 数
+     */
+    void setCountToCache(int sid,int count);
+
+    /**
+     * 从缓存中获取库存
+     *
+     * @param sid sid
+     * @return int
+     */
+    int getCountFromCache(int sid);
+
+    /**
+     * 从缓存中删除库存
+     *
+     * @param sid sid
+     */
+    void deleteCountFromCache(int sid);
+
+
+    /**
+     * 从数据库获取库存
+     *
+     * @param sid sid
+     * @return int
+     */
+    int getCountFromDB(int sid);
+
+
+    /**
+     * 销售商品
+     *
+     * @param sid sid
+     * @return int
+     */
+    int saleGoods(int sid);
+
+    /**
+     * 创建订单
+     *
+     * @param sid    sid
+     * @param userId 用户id
+     * @return int
+     */
+    int createOrder(int sid,int userId);
+}
+```
+
+- Impl
+
+```java
+@Service
+public class StockOrderServiceImpl extends ServiceImpl<StockOrderMapper, StockOrder> implements StockOrderService {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(StockOrderServiceImpl.class);
+
+    @Resource
+    private UserMapper userMapper;
+    @Resource
+    private StockMapper stockMapper;
+    @Resource
+    private StockOrderMapper stockOrderMapper;
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
+
+    @Transactional(rollbackFor = {Exception.class})
+    @Override
+    public String createOrderBySid(int userId, int sid) throws Exception {
+        //首先验证用户id是否有效
+        boolean isVerified = verifyUser(userId);
+        if (!isVerified) {
+            return "非法用户！";
+        }
+
+        //检查库存
+        boolean hasCount = checkCount(sid);
+        if (!hasCount) {
+            return "库存不足！";
+        }
+
+
+        //创建订单
+        int cnt = createOrder(sid, userId);
+        if (cnt == 0) {
+            throw new Exception("发生意外错误，请稍后再试");
+        }
+
+        //库存充足,开始售卖商品
+        cnt = saleGoods(sid);
+        if (cnt == 0) {
+            throw new Exception("库存不足！");
+        }
+        return "购买成功!";
+    }
+
+    @Override
+    public String returnGoodsHashKey(int sid) {
+        return CacheKey.GoodsKey.getKey() + "_" + sid;
+    }
+
+    @Override
+    public boolean checkCount(int sid) {
+        // 获取库存
+        int count = getCountFromCache(sid);
+        if (count == 0) {
+            return false;
+        }
+        return true;
+    }
+
+
+    @Override
+    public boolean verifyUser(int userId) {
+        User user = userMapper.selectById(userId);
+        if (user == null) {
+            return false;
+        }
+        return true;
+    }
+
+    @Override
+    public void setCountToCache(int sid, int count) {
+        String hashKey = returnGoodsHashKey(sid);
+        stringRedisTemplate.opsForValue().set(hashKey, String.valueOf(count), 3600, TimeUnit.SECONDS);
+    }
+
+    @Override
+    public int getCountFromCache(int sid) {
+        String hashKey = returnGoodsHashKey(sid);
+        String count = stringRedisTemplate.opsForValue().get(hashKey);
+        //如果缓存命中
+        if (count != null) {
+            return Integer.parseInt(count);
+        }
+        //缓存不命中
+        //去数据库查库存
+        int cnt = getCountFromDB(sid);
+        //将查到的缓存放入Cache
+        setCountToCache(sid, cnt);
+        return cnt;
+    }
+
+    @Override
+    public void deleteCountFromCache(int sid) {
+        String hashKey = returnGoodsHashKey(sid);
+        stringRedisTemplate.delete(hashKey);
+    }
+
+    @Override
+    public int getCountFromDB(int sid) {
+        Stock stock = stockMapper.selectById(sid);
+        return stock.getCount() - stock.getSale();
+    }
+
+    @Override
+    public int saleGoods(int sid) {
+        int cnt = stockMapper.updateSaleCnt(sid);
+        return cnt;
+    }
+
+    @Override
+    public int createOrder(int sid, int userId) {
+        StockOrder stockOrder = new StockOrder();
+        stockOrder.setSid(sid);
+        stockOrder.setUserId(userId);
+        int cnt = stockOrderMapper.insert(stockOrder);
+        return cnt;
+    }
+}
+```
+
+- StockOrderController
+
+```java
+@RestController
+@RequestMapping("/stockOrder")
+public class StockOrderController {
+    private static final Logger LOGGER = LoggerFactory.getLogger(StockOrderController.class);
+    @Resource
+    private StockOrderService stockOrderService;
+
+    @Resource
+    private ThreadPool threadPool;
+    @Resource
+    private RabbitTemplate rabbitTemplate;
+    @Resource
+    private CanalClient client;
+
+    /**
+     * 每秒放行10个请求
+     */
+    RateLimiter rateLimiter = RateLimiter.create(100);
+
+    @GetMapping("/createOrderBySid/{userId}/{sid}")
+    public String createOrderBySid(@PathVariable("userId") int userId,
+                                   @PathVariable("sid") int sid) throws Exception {
+        //  非阻塞式获取令牌
+        if (!rateLimiter.tryAcquire(1000, TimeUnit.MILLISECONDS)) {
+            return "系统繁忙，请稍后再试";
+        }
+        String  result="";
+
+        //  购买
+        try{
+            result=stockOrderService.createOrderBySid(userId,sid);
+            client.delCacheByCanal("m4a_miaosha","stock");
+        }catch (Exception e){
+            LOGGER.error("购买失败：[{}]", e.getMessage());
+            return "购买失败，库存不足";
+        }
+        // 返回结果
+        return result;
+    }
 
 
 
 
-## 6、如何优雅的实现订单异步处理
+    class DelCacheByThread implements Runnable {
+        private static final int DELAY_MILLSECONDS = 1000;
+        private int sid;
+        public DelCacheByThread(int sid) {
+            this.sid = sid;
+        }
+        @Override
+        public void run() {
+            try {
+                LOGGER.info("异步执行缓存再删除，商品id：[{}]， 首先休眠：[{}] 毫秒", sid, DELAY_MILLSECONDS);
+                Thread.sleep(DELAY_MILLSECONDS);
+                //删除缓存
+                stockOrderService.deleteCountFromCache(sid);
+                LOGGER.info("再次删除商品id：[{}] 缓存", sid);
+            } catch (Exception e) {
+                LOGGER.error("delCacheByThread执行出错", e);
+            }
+        }
+
+    }
+}
+```
+
+使用jmeter自行压测
+
+## 7、如何优雅的实现订单异步处理
 
 
 
