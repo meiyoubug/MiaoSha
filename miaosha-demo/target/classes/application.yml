@@ -32,3 +32,9 @@ mybatis-plus:
       logic-not-delete-value: 0
       id-type: auto
   mapper-locations: classpath:/xml/*.xml
+canal:
+  ip: 127.0.0.1
+  port: 11111
+  destination: example
+  username:
+  password:

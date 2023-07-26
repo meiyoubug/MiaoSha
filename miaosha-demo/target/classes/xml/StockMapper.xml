@@ -3,7 +3,7 @@
 <mapper namespace="com.zc.mapper.StockMapper">
 
     <update id="updateSaleCnt">
-       update stock set sale=sale+1 where sale+1&lt;=count and id=1
+       update stock set sale=sale+1 where sale&lt;=count-1 and id=#{sid}
     </update>
     <update id="updateByOptimistic" parameterType="com.zc.entity.Stock">
        update stock
