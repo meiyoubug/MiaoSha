@@ -8,7 +8,7 @@ import lombok.EqualsAndHashCode;
 
 /**
  * <p>
- * 
+ *
  * </p>
  *
  * @author admin
@@ -42,6 +42,5 @@ import lombok.EqualsAndHashCode;
      * 乐观锁，版本号
      */
       private Integer version;
-
 
 }

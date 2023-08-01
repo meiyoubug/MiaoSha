@@ -1,5 +1,7 @@
 package com.zc.service.impl;
 
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.extension.conditions.query.QueryChainWrapper;
 import com.zc.entity.Stock;
 import com.zc.mapper.StockMapper;
 import com.zc.utils.CacheKey;
@@ -14,6 +16,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.DigestUtils;
 
 import javax.annotation.Resource;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -65,5 +68,25 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         stringRedisTemplate.opsForValue().set(hashKey, verifyHash, 3600, TimeUnit.SECONDS);
         LOGGER.info("Redis写入：[{}] [{}]", hashKey, verifyHash);
         return verifyHash;
+    }
+
+    @Override
+    public String login(String userName, String passWord) {
+        User user=userMapper.selectOne(new QueryWrapper<User>().eq("user_name",userName));
+        if(user==null){
+            return "用户名或密码错误";
+        }
+
+        if(!passWord.equals(user.getPassWord())){
+            return "用户名或密码错误";
+        }
+
+        String token= UUID.randomUUID().toString();
+        String key=CacheKey.LOGIN_USER_KEY+token;
+        stringRedisTemplate.opsForValue().set(key,user.getId().toString());
+        stringRedisTemplate.expire(key,7,TimeUnit.DAYS);
+
+        //返回token
+        return token;
     }
 }

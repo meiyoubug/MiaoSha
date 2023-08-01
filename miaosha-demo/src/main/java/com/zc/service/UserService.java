@@ -13,4 +13,13 @@ import com.baomidou.mybatisplus.extension.service.IService;
  */
 public interface UserService extends IService<User> {
      String getVerifyHash(Integer sid,Integer userId) throws Exception;
+
+     /**
+      * 登录
+      *
+      * @param userName 用户名
+      * @param passWord 通过单词
+      * @return {@link String}
+      */
+     String login(String userName,String passWord);
 }

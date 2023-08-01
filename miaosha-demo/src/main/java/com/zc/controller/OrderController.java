@@ -1,6 +1,5 @@
 package com.zc.controller;
-
-import com.alibaba.google.common.util.concurrent.RateLimiter;
+import com.zc.flowControl.annotation.FlowControl;
 import com.zc.service.StockService;
 import com.zc.threadPool.ThreadPool;
 import com.zc.utils.CanalClient;
@@ -8,7 +7,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.web.bind.annotation.*;
-
 import javax.annotation.Resource;
 
 
@@ -32,10 +30,7 @@ public class OrderController {
     @Resource
     private CanalClient client;
 
-    /**
-     * 每秒放行10个请求
-     */
-    RateLimiter rateLimiter = RateLimiter.create(10);
+
 
 
 
@@ -241,17 +236,8 @@ public class OrderController {
      */
     @RequestMapping("/createOptimisticOrder/{sid}")
     @ResponseBody
-    public String createOptimisticOrder(@PathVariable int sid) {
-        //阻塞式获取令牌
-        LOGGER.info("等待时间" + rateLimiter.acquire());
-
-//        非阻塞式获取令牌
-//        if (!rateLimiter.tryAcquire(1000, TimeUnit.MILLISECONDS)) {
-//            LOGGER.warn("你被限流了，真不幸，直接返回失败");
-//            return "购买失败，库存不足";
-//        }
-
-
+    @FlowControl(getSeconds = 10)
+    public String createOptimisticOrder(@PathVariable Integer sid) {
         int id = 0;
         try {
             id = stockService.createOptimisticOrder(sid);

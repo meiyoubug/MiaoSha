@@ -33,4 +33,10 @@ public class UserController {
         }
         return String.format("请求抢购验证hash值为：%s",hash);
     }
+
+    @GetMapping("/login/{userName}/{passWord}")
+    public String login(@PathVariable("userName") String userName,
+                        @PathVariable("passWord") String passWord){
+        return userService.login(userName,passWord);
+    }
 }

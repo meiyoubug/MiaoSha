@@ -8,7 +8,7 @@ import lombok.EqualsAndHashCode;
 
 /**
  * <p>
- * 
+ *
  * </p>
  *
  * @author admin
@@ -24,6 +24,10 @@ import lombok.EqualsAndHashCode;
       private Long id;
 
     private String userName;
+
+    private String passWord;
+
+    private String neckName;
 
 
 }

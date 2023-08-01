@@ -9,7 +9,10 @@ package com.zc.utils;
 public enum CacheKey {
     GoodsKey("miaosha_goods"),
     HASH_KEY("miaosha_hash"),
-    LIMIT_KEY("miaosha_limit");
+    LIMIT_KEY("miaosha_limit"),
+    LOGIN_USER_KEY("miaosha_user"),
+
+    ;
 
     private String key;
 
