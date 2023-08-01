@@ -2,6 +2,7 @@ package com.zc.service;
 
 import com.zc.entity.StockOrder;
 import com.baomidou.mybatisplus.extension.service.IService;
+import com.zc.result.Result;
 
 /**
  * <p>
@@ -14,12 +15,10 @@ import com.baomidou.mybatisplus.extension.service.IService;
 public interface StockOrderService extends IService<StockOrder> {
     /**
      * 创建订单,sid
-     *
-     * @param userId 用户id
      * @param sid    sid
-     * @return {@link String}
+     * @return {@link Result}
      */
-    String createOrderBySid(int userId,int sid) throws Exception;
+    Result createOrderBySid(int sid) throws Exception;
 
 
     /**
@@ -38,13 +37,6 @@ public interface StockOrderService extends IService<StockOrder> {
      */
     boolean checkCount(int sid);
 
-    /**
-     * 验证用户是否有效
-     *
-     * @param userId 用户id
-     * @return boolean
-     */
-    boolean verifyUser(int userId);
 
     /**
      * 向缓存中添加库存

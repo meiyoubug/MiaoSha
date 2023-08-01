@@ -6,9 +6,12 @@ import com.zc.entity.User;
 import com.zc.mapper.StockMapper;
 import com.zc.mapper.StockOrderMapper;
 import com.zc.mapper.UserMapper;
+import com.zc.result.Result;
+import com.zc.result.ResultFactory;
 import com.zc.service.StockOrderService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.zc.utils.CacheKey;
+import com.zc.utils.UserHodler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -28,9 +31,7 @@ import java.util.concurrent.TimeUnit;
  */
 @Service
 public class StockOrderServiceImpl extends ServiceImpl<StockOrderMapper, StockOrder> implements StockOrderService {
-
     private static final Logger LOGGER = LoggerFactory.getLogger(StockOrderServiceImpl.class);
-
     @Resource
     private UserMapper userMapper;
     @Resource
@@ -42,32 +43,29 @@ public class StockOrderServiceImpl extends ServiceImpl<StockOrderMapper, StockOr
 
     @Transactional(rollbackFor = {Exception.class})
     @Override
-    public String createOrderBySid(int userId, int sid) throws Exception {
-        //首先验证用户id是否有效
-        boolean isVerified = verifyUser(userId);
-        if (!isVerified) {
-            return "非法用户！";
-        }
-
+    public Result createOrderBySid(int sid) throws Exception {
+        //从thread-local获取用户id
+        Integer userId= Integer.valueOf(UserHodler.get());
+        //缓存中的key
+        String key=returnGoodsHashKey(sid);
         //检查库存
         boolean hasCount = checkCount(sid);
         if (!hasCount) {
-            return "库存不足！";
+            return ResultFactory.buildFailResult("库存不足");
         }
-
 
         //创建订单
         int cnt = createOrder(sid, userId);
         if (cnt == 0) {
             throw new Exception("发生意外错误，请稍后再试");
         }
-
+        stringRedisTemplate.delete(key);
         //库存充足,开始售卖商品
         cnt = saleGoods(sid);
         if (cnt == 0) {
             throw new Exception("库存不足！");
         }
-        return "购买成功!";
+        return ResultFactory.buildSuccessResult("购买成功");
     }
 
     @Override
@@ -85,15 +83,6 @@ public class StockOrderServiceImpl extends ServiceImpl<StockOrderMapper, StockOr
         return true;
     }
 
-
-    @Override
-    public boolean verifyUser(int userId) {
-        User user = userMapper.selectById(userId);
-        if (user == null) {
-            return false;
-        }
-        return true;
-    }
 
     @Override
     public void setCountToCache(int sid, int count) {
